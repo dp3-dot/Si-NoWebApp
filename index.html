@@ -372,7 +372,7 @@
     // ==========================================
     function callGAS(functionName, ...args) {
       // Fungsi baca boleh diulang otomatis; fungsi simpan/ubah/hapus TIDAK diulang agar tidak ganda.
-      const READ = ['getInitialData', 'getLiveUpdates', 'getSppdData', 'getAttachmentContent', 'getLaporanKinerja', 'loginUser'];
+      const READ = ['cariSuratUntukTelaah', 'getInitialData', 'getLiveUpdates', 'getSppdData', 'getAttachmentContent', 'getLaporanKinerja', 'loginUser'];
       const tries = READ.includes(functionName) ? 3 : 1;
       const rpcArgs = [...args];
       if (functionName !== 'loginUser' && functionName !== 'logoutUser') {
@@ -562,6 +562,11 @@
       const r = normalizeRole(user?.role, user);
       return r === 'admin' || r === 'operator_tu' || r === 'operator_bidang';
     }
+    // Pengambilan nomor surat keluar: Pimpinan, Penelaah, dan Petugas Ekspedisi tidak berwenang.
+    function canTakeNomor(user) {
+      const r = normalizeRole(user?.role, user);
+      return r === 'admin' || r === 'user' || r === 'operator_tu' || r === 'operator_bidang';
+    }
 
     // Operator TU: role khusus. Boleh membuat lembar disposisi atas perintah atasan, tanpa hak Admin TU.
     function isSekOperator(user) {
@@ -592,8 +597,11 @@
     }
     // Tahun berjalan menurut WIB; dipakai untuk filter/laporan agar tidak perlu diubah manual tiap tahun.
     const CURRENT_YEAR = Number(jakartaDateKey().slice(0, 4));
-    // Daftar tahun tambahan (lebih baru dari 2026) untuk pilihan filter; 2026, 2025, ... tetap ada di markup.
-    const EXTRA_YEARS = Array.from({ length: Math.max(0, CURRENT_YEAR - 2026) }, (_, i) => CURRENT_YEAR - i);
+    // Satu database dipakai untuk 6 tahun (2026-2031). Setelah 2031: salin aplikasi + buat Spreadsheet baru, lalu ubah YEAR_MIN/YEAR_MAX.
+    const YEAR_MIN = 2026;
+    const YEAR_MAX = 2031;
+    const YEAR_OPTIONS = Array.from({ length: YEAR_MAX - YEAR_MIN + 1 }, (_, i) => YEAR_MIN + i);
+    const APP_YEAR = Math.min(Math.max(CURRENT_YEAR, YEAR_MIN), YEAR_MAX);
     // Waktu sekarang dalam format "yyyy-MM-dd HH:mm" menurut WIB.
     function jakartaNowStr() {
       const p = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
@@ -889,7 +897,7 @@
       const v = String(st || '');
       if (v === 'dibatalkan') return 'Dibatalkan';
       if (v === 'disahkan' || v === 'arsip_final') return 'Berlaku';
-      if (v === 'draft_diunggah') return 'Draft';
+      // 'draft_diunggah' (ada unggahan draf) sengaja tampil sebagai 'Tercatat': nomor sudah tercatat resmi.
       if (v === 'menunggu_telaah') return 'Menunggu Telaah';
       if (v === 'perlu_perbaikan') return 'Perlu Perbaikan';
       if (v === 'tercatat_penuh') return 'Tercatat Penuh';
@@ -1126,7 +1134,66 @@
       );
     }
 
-    function TelaahPanel({ currentUser, users = [], settings = {}, telaahList = [], suratMasukList = [], suratKeluarList = [], onAssign, onStart, onSave, onOpenLetter, onTake, onResubmit, onPickRevision, revisionCount = 0 }) {
+    // ==========================================
+    // KOMPONEN: DASHBOARD PENELAAH TEKNIS
+    // ==========================================
+    function PenelaahDashboard({ currentUser, telaahList = [], onOpenTelaah, onOpenKinerja }) {
+      const myId = String(currentUser?.id || '');
+      const antrean = telaahList.filter((t) => !t.penelaahId && (t.statusTelaah === 'Menunggu Telaah' || t.statusTelaah === 'Belum Ditelaah'));
+      const mine = telaahList.filter((t) => String(t.penelaahId) === myId);
+      const proses = mine.filter((t) => t.statusTelaah === 'Sedang Ditelaah' || t.statusTelaah === 'Belum Ditelaah');
+      const dikembalikan = mine.filter((t) => t.statusTelaah === 'Perlu Perbaikan');
+      const selesai = mine.filter((t) => t.statusTelaah === 'Selesai');
+      const d = jakartaDateKey();
+      const bulanIni = d.slice(5, 7) + '-' + d.slice(0, 4);
+      const selesaiBulanIni = selesai.filter((t) => String(t.tanggalSelesai || '').slice(3, 10) === bulanIni).length;
+      const disetujui = selesai.filter((t) => t.hasilTelaah === 'Disetujui').length;
+      const tiles = [
+        { label: 'Antrean Menunggu', value: antrean.length, hint: 'Belum diambil siapa pun', cls: 'text-amber-600' },
+        { label: 'Sedang Saya Telaah', value: proses.length, hint: 'Perlu diselesaikan', cls: 'text-sky-600' },
+        { label: 'Menunggu Perbaikan', value: dikembalikan.length, hint: 'Dikembalikan ke pembuat surat', cls: 'text-rose-600' },
+        { label: 'Selesai Bulan Ini', value: selesaiBulanIni, hint: selesai.length + ' selesai seluruhnya, ' + disetujui + ' disetujui', cls: 'text-emerald-600' },
+      ];
+      const List = ({ title, items, empty }) => (
+        <div className="p-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 space-y-2">
+          <h3 className="text-sm font-bold text-slate-900 dark:text-white">{title}</h3>
+          {items.length === 0 ? <p className="text-xs text-slate-400 italic">{empty}</p> : items.slice(0, 5).map((t) => (
+            <button key={t.id} onClick={onOpenTelaah} className="w-full text-left p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 hover:border-sky-400 text-xs">
+              <div className="font-mono font-bold text-slate-900 dark:text-white">{t.nomorSurat} <span className="font-sans font-normal text-slate-500">({t.jenisSurat})</span></div>
+              <div className="text-slate-600 dark:text-slate-300 truncate">{t.perihal}</div>
+            </button>
+          ))}
+        </div>
+      );
+      return (
+        <div className="space-y-5">
+          <div className="p-5 rounded-2xl bg-gradient-to-r from-sky-600 to-emerald-600 text-white">
+            <p className="text-xs opacity-80">Dashboard Penelaah Teknis</p>
+            <h2 className="text-lg font-bold">Selamat bekerja, {currentUser?.name}</h2>
+            <p className="text-xs opacity-90 mt-1">Ambil surat dari antrean, atau cari sendiri surat masuk/keluar yang belum ditelaah.</p>
+            <div className="flex flex-wrap gap-2 mt-3">
+              <button onClick={onOpenTelaah} className="px-4 py-2 rounded-xl bg-white text-sky-700 text-xs font-bold">Buka Tugas Telaah</button>
+              <button onClick={onOpenKinerja} className="px-4 py-2 rounded-xl bg-white/20 text-white text-xs font-bold border border-white/40">Laporan Kinerja Saya</button>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {tiles.map((x) => (
+              <div key={x.label} className="p-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900">
+                <p className="text-[11px] font-semibold text-slate-500">{x.label}</p>
+                <p className={`text-3xl font-black ${x.cls}`}>{x.value}</p>
+                <p className="text-[10px] text-slate-400">{x.hint}</p>
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <List title="Sedang Saya Telaah" items={proses} empty="Tidak ada telaah yang sedang berjalan." />
+            <List title="Antrean Terbaru" items={antrean} empty="Antrean kosong. Anda tetap dapat mencari surat sendiri di menu Tugas Telaah." />
+          </div>
+        </div>
+      );
+    }
+
+    function TelaahPanel({ currentUser, users = [], settings = {}, telaahList = [], suratMasukList = [], suratKeluarList = [], onAssign, onStart, onSave, onOpenLetter, onTake, onResubmit, onPickRevision, revisionCount = 0, onSearch, onSelfTake }) {
       const role = normalizeRole(currentUser?.role, currentUser);
       const isPenelaah = role === 'penelaah_teknis';
       const penelaahUsers = users.filter((u) => normalizeRole(u.role, u) === 'penelaah_teknis' && u.isActive !== false);
@@ -1139,7 +1206,22 @@
       const [catatan, setCatatan] = useState('');
       const [lampiran, setLampiran] = useState('');
 
-      const options = (jenis === 'Surat Masuk' ? suratMasukList : suratKeluarList).filter((x) => x.status !== 'dibatalkan');
+      // Surat yang sudah punya telaah (aktif maupun selesai) tidak ditawarkan lagi.
+      const sudahDitelaah = new Set(telaahList.map((t) => String(t.suratId)));
+      const options = (jenis === 'Surat Masuk' ? suratMasukList : suratKeluarList).filter((x) => x.status !== 'dibatalkan' && !sudahDitelaah.has(String(x.id)));
+      const [jenisCari, setJenisCari] = useState('Surat Keluar');
+      const [qCari, setQCari] = useState('');
+      const [hasilCari, setHasilCari] = useState(null);
+      const [mencari, setMencari] = useState(false);
+      const doCari = (j, q) => {
+        if (!onSearch) return;
+        setMencari(true);
+        onSearch({ jenisSurat: j, q })
+          .then((rows) => setHasilCari(rows || []))
+          .catch(() => setHasilCari([]))
+          .then(() => setMencari(false));
+      };
+      useEffect(() => { if (isPenelaah) doCari(jenisCari, ''); }, [jenisCari, telaahList.length]);
       const isSuper = role === 'admin' || role === 'pimpinan';
       const badge = (st) => st === 'Selesai' ? 'bg-emerald-100 text-emerald-800' : st === 'Sedang Ditelaah' ? 'bg-sky-100 text-sky-800' : st === 'Perlu Perbaikan' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800';
       const [tab, setTab] = useState('antrean');
@@ -1193,7 +1275,7 @@
               <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                 <div><label className="block font-semibold mb-1">Jenis Surat</label>
                   <select value={jenis} onChange={(e) => { setJenis(e.target.value); setSuratId(''); }} className="w-full p-2 rounded-xl border border-slate-300 dark:bg-slate-800"><option>Surat Keluar</option><option>Surat Masuk</option></select></div>
-                <div className="md:col-span-2"><label className="block font-semibold mb-1">Surat</label>
+                <div className="md:col-span-2"><label className="block font-semibold mb-1">Surat <span className="font-normal text-slate-400">({options.length} belum pernah ditelaah)</span></label>
                   <select value={suratId} onChange={(e) => setSuratId(e.target.value)} className="w-full p-2 rounded-xl border border-slate-300 dark:bg-slate-800"><option value="">Pilih surat...</option>
                     {options.map((x) => <option key={x.id} value={x.id}>{(x.fullLetterNumber || x.agendaNumber) + ' - ' + (x.subject || '').slice(0, 60)}</option>)}</select></div>
                 <div><label className="block font-semibold mb-1">Penelaah</label>
@@ -1204,6 +1286,33 @@
                 <input value={instruksi} onChange={(e) => setInstruksi(e.target.value)} className="w-full p-2 rounded-xl border border-slate-300 dark:bg-slate-800" placeholder="Contoh: periksa kesesuaian dasar hukum" /></div>
               <button disabled={!suratId || !penelaahId} onClick={() => { onAssign({ jenisSurat: jenis, suratId, penelaahId, instruksi }); setSuratId(''); setInstruksi(''); }}
                 className="px-4 py-2 rounded-xl bg-emerald-600 text-white font-bold disabled:opacity-50">Tugaskan</button>
+            </div>
+          )}
+
+          {isPenelaah && (
+            <div className="p-4 rounded-2xl border border-sky-200 dark:border-sky-800 bg-sky-50/50 dark:bg-slate-900 space-y-3 text-xs">
+              <div>
+                <h3 className="font-bold text-sm">Telaah Mandiri</h3>
+                <p className="text-slate-500">Cari surat yang belum ditelaah, lalu ambil sendiri tanpa menunggu penugasan.</p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                <select value={jenisCari} onChange={(e) => setJenisCari(e.target.value)} className="p-2 rounded-xl border border-slate-300 dark:bg-slate-800"><option>Surat Keluar</option><option>Surat Masuk</option></select>
+                <input value={qCari} onChange={(e) => setQCari(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') doCari(jenisCari, qCari); }} placeholder="Cari nomor, perihal, asal/tujuan..." className="sm:col-span-2 p-2 rounded-xl border border-slate-300 dark:bg-slate-800" />
+                <button onClick={() => doCari(jenisCari, qCari)} disabled={mencari} className="px-4 py-2 rounded-xl bg-sky-600 text-white font-bold disabled:opacity-50">{mencari ? 'Mencari...' : 'Cari'}</button>
+              </div>
+              {hasilCari && hasilCari.length === 0 && <p className="text-slate-400 italic">Tidak ada surat yang belum ditelaah sesuai pencarian.</p>}
+              <div className="space-y-2">
+                {(hasilCari || []).map((x) => (
+                  <div key={x.id} className="p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-mono font-bold text-slate-900 dark:text-white">{x.nomor}</div>
+                      <div className="text-slate-700 dark:text-slate-300">{x.perihal}</div>
+                      <div className="text-slate-500">{x.pihak}{x.tanggal ? ' • ' + x.tanggal : ''}{x.bidang ? ' • ' + x.bidang : ''}</div>
+                    </div>
+                    <button onClick={() => { if (onSelfTake) onSelfTake(x).then((ok) => { if (ok) { setHasilCari((prev) => (prev || []).filter((y) => y.id !== x.id)); setTab('proses'); } }); }} className="px-3 py-1.5 rounded-lg bg-sky-600 text-white font-semibold shrink-0">Telaah Sekarang</button>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
@@ -1268,9 +1377,9 @@
 
       const currentYear = new Date().getFullYear();
       const [startMonth, setStartMonth] = useState(1);
-      const [startYear, setStartYear] = useState(CURRENT_YEAR);
+      const [startYear, setStartYear] = useState(APP_YEAR);
       const [endMonth, setEndMonth] = useState(new Date().getMonth() + 1);
-      const [endYear, setEndYear] = useState(CURRENT_YEAR);
+      const [endYear, setEndYear] = useState(APP_YEAR);
       const [selectedDept, setSelectedDept] = useState('all');
       const [activeModalTab, setActiveModalTab] = useState('ringkasan'); // 'ringkasan' | 'surat-masuk' | 'surat-keluar' | 'pratinjau-cetak'
 
@@ -1279,7 +1388,7 @@
       const isRangeValid = startKey <= endKey;
 
       const applyPreset = (preset) => {
-        const yr = CURRENT_YEAR;
+        const yr = APP_YEAR;
         if (preset === 'tahun-ini') {
           setStartMonth(1); setStartYear(yr); setEndMonth(12); setEndYear(yr);
         } else if (preset === 'q1') {
@@ -1560,7 +1669,7 @@
                   Preset Cepat:
                 </span>
                 {[
-                  { id: 'tahun-ini', label: '1 Tahun Penuh (' + CURRENT_YEAR + ')' },
+                  { id: 'tahun-ini', label: '1 Tahun Penuh (' + APP_YEAR + ')' },
                   { id: 'bulan-ini', label: 'Bulan Ini' },
                   { id: 'q1', label: 'Triwulan I (Jan-Mar)' },
                   { id: 'q2', label: 'Triwulan II (Apr-Jun)' },
@@ -1598,10 +1707,7 @@
                     onChange={(e) => setStartYear(Number(e.target.value))}
                     className="text-xs font-bold bg-transparent border-none text-slate-800 focus:ring-0 cursor-pointer"
                   >
-                    {EXTRA_YEARS.map((y) => <option key={y} value={y}>{y}</option>)}
-                    <option value={2026}>2026</option>
-                    <option value={2025}>2025</option>
-                    <option value={2024}>2024</option>
+                    {YEAR_OPTIONS.map((y) => <option key={y} value={y}>{y}</option>)}
                   </select>
                 </div>
 
@@ -1622,10 +1728,7 @@
                     onChange={(e) => setEndYear(Number(e.target.value))}
                     className="text-xs font-bold bg-transparent border-none text-slate-800 focus:ring-0 cursor-pointer"
                   >
-                    {EXTRA_YEARS.map((y) => <option key={y} value={y}>{y}</option>)}
-                    <option value={2026}>2026</option>
-                    <option value={2025}>2025</option>
-                    <option value={2024}>2024</option>
+                    {YEAR_OPTIONS.map((y) => <option key={y} value={y}>{y}</option>)}
                   </select>
                 </div>
 
@@ -2447,7 +2550,7 @@
       // Agenda & Rekapitulasi States
       const [agendaSubTab, setAgendaSubTab] = useState('keluar'); // 'keluar' | 'masuk'
       const [agendaMonth, setAgendaMonth] = useState(String(new Date().getMonth() + 1).padStart(2, '0'));
-      const [agendaYear, setAgendaYear] = useState(String(CURRENT_YEAR));
+      const [agendaYear, setAgendaYear] = useState(String(APP_YEAR));
       const [agendaDept, setAgendaDept] = useState('all');
       const [isPreviewAgendaOpen, setIsPreviewAgendaOpen] = useState(false);
 
@@ -2647,7 +2750,12 @@
         setAiSuccessMsgSm(null);
       };
 
+      const canTakeNumber = canTakeNomor(currentUser);
       const openAmbilNomorModal = () => {
+        if (!canTakeNumber) {
+          showToast('Akses Dibatasi', 'Role Anda tidak berwenang mengambil nomor surat keluar.', 'alert');
+          return;
+        }
         resetSkForm();
         setIsAmbilNomorOpen(true);
       };
@@ -3383,6 +3491,19 @@
         callGAS('tugaskanTelaah', data)
           .then((res) => { setIsLoading(false); setTelaahList((prev) => [res.data, ...prev]); showToast('Penugasan Berhasil', 'Penelaah teknis telah ditugaskan.', 'success'); })
           .catch((err) => { setIsLoading(false); showToast('Penugasan Gagal', err.message || 'Terjadi kesalahan.', 'alert'); });
+      };
+      const handleCariTelaah = (filter) => callGAS('cariSuratUntukTelaah', filter).then((res) => res.data || []);
+      const handleTelaahMandiri = (item) => {
+        setIsLoading(true);
+        return callGAS('ambilMandiriTelaah', { jenisSurat: item.jenisSurat, suratId: item.id })
+          .then((res) => {
+            setIsLoading(false);
+            setTelaahList((prev) => [res.data, ...prev]);
+            showToast('Telaah Dimulai', 'Surat masuk ke daftar "Sedang Ditelaah".', 'success');
+            loadDataFromSheets();
+            return true;
+          })
+          .catch((err) => { setIsLoading(false); showToast('Gagal', err.message || 'Surat tidak dapat diambil.', 'alert'); return false; });
       };
       const handleAmbilTelaah = (telaahId) => {
         callGAS('ambilUntukTelaah', { telaahId })
@@ -4179,6 +4300,7 @@
               {(normalizeRole(currentUser?.role, currentUser) === 'admin' || isDeptRole(currentUser) || isSekOperator(currentUser)) && (
                 <button
                   onClick={openAmbilNomorModal}
+                          style={canTakeNumber ? undefined : { display: 'none' }}
                   className="hidden sm:inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-xs transition-all"
                 >
                   <Icon name="ticket" className="w-4 h-4" />
@@ -4358,6 +4480,7 @@
                   </p>
                   <button
                     onClick={openAmbilNomorModal}
+                          style={canTakeNumber ? undefined : { display: 'none' }}
                     className="w-full flex items-center justify-center gap-2 py-3 px-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-black text-xs shadow-md hover:shadow-lg transition-all transform active:scale-95"
                   >
                     <Icon name="ticket" className="w-4 h-4" />
@@ -4434,6 +4557,9 @@
               {/* TAB 1: DASHBOARD */}
               {activeTab === 'dashboard' && (() => {
                 const isSuper = normalizeRole(currentUser?.role, currentUser) === 'admin' || normalizeRole(currentUser?.role, currentUser) === 'pimpinan';
+                if (normalizeRole(currentUser?.role, currentUser) === 'penelaah_teknis') {
+                  return <PenelaahDashboard currentUser={currentUser} telaahList={telaahList} onOpenTelaah={() => setActiveTab('telaah')} onOpenKinerja={() => setActiveTab('kinerja')} />;
+                }
 
                 // Effective lists scoped by role
                 const effSuratKeluarList = isSuper
@@ -4504,6 +4630,7 @@
                           {(normalizeRole(currentUser?.role, currentUser) === 'admin' || isDeptRole(currentUser) || isSekOperator(currentUser)) && (
                             <button
                               onClick={openAmbilNomorModal}
+                          style={canTakeNumber ? undefined : { display: 'none' }}
                               className="inline-flex items-center justify-center gap-2 px-6 py-3.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 font-black text-xs sm:text-sm shadow-lg hover:shadow-xl transition-all transform hover:-translate-y-0.5"
                             >
                               <Icon name="ticket" className="w-4 h-4 sm:w-5 sm:h-5 text-slate-950" />
@@ -4657,6 +4784,7 @@
                         </div>
                         <button
                           onClick={openAmbilNomorModal}
+                          style={canTakeNumber ? undefined : { display: 'none' }}
                           className="text-xs font-bold text-emerald-600 hover:text-emerald-700 hover:underline flex items-center gap-1"
                         >
                           <span>+ Ambil Nomor</span>
@@ -4750,6 +4878,7 @@
                           {(normalizeRole(currentUser?.role, currentUser) === 'admin' || isDeptRole(currentUser) || isSekOperator(currentUser)) && (
                             <button
                               onClick={openAmbilNomorModal}
+                          style={canTakeNumber ? undefined : { display: 'none' }}
                               className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-600 hover:text-emerald-700"
                             >
                               <Icon name="ticket" className="w-3.5 h-3.5" />
@@ -4845,6 +4974,8 @@
                   onAssign={handleTugaskanTelaah}
                   onStart={handleMulaiTelaah}
                   onTake={handleAmbilTelaah}
+                  onSearch={handleCariTelaah}
+                  onSelfTake={handleTelaahMandiri}
                   onResubmit={handleKirimUlangTelaah}
                   onPickRevision={handleFileChangeSk}
                   revisionCount={skAttachments.length}
@@ -4948,6 +5079,7 @@
                           )}
                           <button
                             onClick={openAmbilNomorModal}
+                          style={canTakeNumber ? undefined : { display: 'none' }}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md transition-all transform hover:-translate-y-0.5 shrink-0"
                           >
                             <Icon name="ticket" className="w-3.5 h-3.5" />
@@ -4978,6 +5110,7 @@
                     </div>
                     <button
                       onClick={openAmbilNomorModal}
+                          style={canTakeNumber ? undefined : { display: 'none' }}
                       className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 shadow-xs shrink-0 self-start sm:self-auto"
                     >
                       <Icon name="ticket" className="w-4 h-4" />
@@ -5609,10 +5742,7 @@
                             onChange={(e) => setAgendaYear(e.target.value)}
                             className="text-xs rounded-md bg-transparent border-none text-slate-800 font-bold focus:ring-0 cursor-pointer py-1 pr-6"
                           >
-                            {EXTRA_YEARS.map((y) => <option key={y} value={String(y)}>{y}</option>)}
-                            <option value="2026">2026</option>
-                            <option value="2025">2025</option>
-                            <option value="2024">2024</option>
+                            {YEAR_OPTIONS.map((y) => <option key={y} value={String(y)}>{y}</option>)}
                           </select>
                         </div>
 
