@@ -2292,7 +2292,7 @@
       const makeBlank = () => ({ nipPelaksana:'', pegawaiPelaksana:'', pangkatGolongan:'', jabatanInstansi:'', penggunaAnggaran:settings.headOfAgencyName || '', tingkatBiaya:'', maksudPerjalanan:'', alatAngkutan:'Kendaraan Dinas', tempatBerangkat:'Curup', tempatTujuan:'', lamaPerjalanan:'', tanggalBerangkat:'', tanggalKembali:'', instansiAnggaran:'DP3APPKB Kabupaten Rejang Lebong', akun:'', keterangan:'', tempatPenerbitan:'Curup', tanggalPenerbitan:new Date().toISOString().slice(0,10), penandatangan:(settings.headOfAgencyName || '') + '\nNIP. ' + (settings.headOfAgencyNIP || ''), lembarKe:'1 (Satu)', kodeNomor:'090', pengikut:[makeFollower(),makeFollower(),makeFollower()] });
       const [form,setForm]=useState(makeBlank); const [rows,setRows]=useState(sppdList); const [view,setView]=useState('list'); const [editingId,setEditingId]=useState(null); const [saving,setSaving]=useState(false); const [selected,setSelected]=useState(null); const [msg,setMsg]=useState('');
       useEffect(()=>setRows(sppdList || []),[sppdList]);
-      useEffect(()=>{ let alive=true; const pull=()=>callGAS('getSppdData').then(r=>{if(alive&&r?.success){setRows(r.data||[]); if(onListRefresh)onListRefresh(r.data||[]);}}).catch(()=>{}); pull(); const t=setInterval(pull,15000); return()=>{alive=false;clearInterval(t)}; },[]);
+      useEffect(()=>{ let alive=true; const pull=()=>callGAS('getSppdData').then(r=>{if(alive&&r?.success){setRows(r.data||[]); if(onListRefresh)onListRefresh(r.data||[]);}}).catch(()=>{}); pull(); const t=setInterval(()=>{ if(!document.hidden) pull(); },60000); return()=>{alive=false;clearInterval(t)}; },[]);
       const toIso=(v)=>{const s=String(v||'').trim(); if(/^\d{2}-\d{2}-\d{4}$/.test(s)){const [d,m,y]=s.split('-');return `${y}-${m}-${d}`;} return s;};
       const toDisplay=(v)=>{const s=String(v||'').split('T')[0]; if(/^\d{4}-\d{2}-\d{2}$/.test(s)){const [y,m,d]=s.split('-');return `${d}-${m}-${y}`;} return s;};
       const update=(k,v)=>setForm(p=>({...p,[k]:v}));
@@ -3212,7 +3212,7 @@
         if (!currentUser || !isDataReady) return undefined;
         let stopped = false;
         const pollLiveUpdates = () => {
-          if (stopped || livePollingBusyRef.current) return;
+          if (stopped || livePollingBusyRef.current || document.hidden) return;
           livePollingBusyRef.current = true;
           const firstPoll = !liveHasPolledRef.current;
           const since = liveLastCheckRef.current || new Date(Date.now() - 60000).toISOString();
@@ -3238,10 +3238,14 @@
             });
         };
         pollLiveUpdates();
-        const timer = setInterval(pollLiveUpdates, 20000);
+        const timer = setInterval(pollLiveUpdates, 45000);
+        // Saat tab/layar kembali aktif, segera cek pembaruan (selama tersembunyi polling dihentikan)
+        const onVisible = () => { if (!document.hidden) pollLiveUpdates(); };
+        document.addEventListener('visibilitychange', onVisible);
         return () => {
           stopped = true;
           clearInterval(timer);
+          document.removeEventListener('visibilitychange', onVisible);
         };
       }, [currentUser, isDataReady]);
 
