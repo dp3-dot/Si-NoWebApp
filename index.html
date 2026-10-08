@@ -590,6 +590,15 @@
       const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Jakarta', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(date).reduce((acc, part) => ({ ...acc, [part.type]: part.value }), {});
       return `${parts.year}-${parts.month}-${parts.day}`;
     }
+    // Tahun berjalan menurut WIB; dipakai untuk filter/laporan agar tidak perlu diubah manual tiap tahun.
+    const CURRENT_YEAR = Number(jakartaDateKey().slice(0, 4));
+    // Daftar tahun tambahan (lebih baru dari 2026) untuk pilihan filter; 2026, 2025, ... tetap ada di markup.
+    const EXTRA_YEARS = Array.from({ length: Math.max(0, CURRENT_YEAR - 2026) }, (_, i) => CURRENT_YEAR - i);
+    // Waktu sekarang dalam format "yyyy-MM-dd HH:mm" menurut WIB.
+    function jakartaNowStr() {
+      const p = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+      return `${jakartaDateKey()} ${p.replace('24:', '00:')}`;
+    }
 
     function formatDisplayDate(value) {
       const raw = String(value || '');
@@ -919,7 +928,7 @@
       const isSuper = role === 'admin' || role === 'pimpinan';
       const year = new Date().getFullYear();
       const [dari, setDari] = useState(`${year}-01-01`);
-      const [sampai, setSampai] = useState(new Date().toISOString().split('T')[0]);
+      const [sampai, setSampai] = useState(jakartaDateKey());
       const [targetUserId, setTargetUserId] = useState(currentUser?.id || '');
       const [rows, setRows] = useState(null);
       const [info, setInfo] = useState(null);
@@ -1259,9 +1268,9 @@
 
       const currentYear = new Date().getFullYear();
       const [startMonth, setStartMonth] = useState(1);
-      const [startYear, setStartYear] = useState(2026);
+      const [startYear, setStartYear] = useState(CURRENT_YEAR);
       const [endMonth, setEndMonth] = useState(new Date().getMonth() + 1);
-      const [endYear, setEndYear] = useState(2026);
+      const [endYear, setEndYear] = useState(CURRENT_YEAR);
       const [selectedDept, setSelectedDept] = useState('all');
       const [activeModalTab, setActiveModalTab] = useState('ringkasan'); // 'ringkasan' | 'surat-masuk' | 'surat-keluar' | 'pratinjau-cetak'
 
@@ -1270,7 +1279,7 @@
       const isRangeValid = startKey <= endKey;
 
       const applyPreset = (preset) => {
-        const yr = 2026;
+        const yr = CURRENT_YEAR;
         if (preset === 'tahun-ini') {
           setStartMonth(1); setStartYear(yr); setEndMonth(12); setEndYear(yr);
         } else if (preset === 'q1') {
@@ -1551,7 +1560,7 @@
                   Preset Cepat:
                 </span>
                 {[
-                  { id: 'tahun-ini', label: '1 Tahun Penuh (2026)' },
+                  { id: 'tahun-ini', label: '1 Tahun Penuh (' + CURRENT_YEAR + ')' },
                   { id: 'bulan-ini', label: 'Bulan Ini' },
                   { id: 'q1', label: 'Triwulan I (Jan-Mar)' },
                   { id: 'q2', label: 'Triwulan II (Apr-Jun)' },
@@ -1589,6 +1598,7 @@
                     onChange={(e) => setStartYear(Number(e.target.value))}
                     className="text-xs font-bold bg-transparent border-none text-slate-800 focus:ring-0 cursor-pointer"
                   >
+                    {EXTRA_YEARS.map((y) => <option key={y} value={y}>{y}</option>)}
                     <option value={2026}>2026</option>
                     <option value={2025}>2025</option>
                     <option value={2024}>2024</option>
@@ -1612,6 +1622,7 @@
                     onChange={(e) => setEndYear(Number(e.target.value))}
                     className="text-xs font-bold bg-transparent border-none text-slate-800 focus:ring-0 cursor-pointer"
                   >
+                    {EXTRA_YEARS.map((y) => <option key={y} value={y}>{y}</option>)}
                     <option value={2026}>2026</option>
                     <option value={2025}>2025</option>
                     <option value={2024}>2024</option>
@@ -2300,7 +2311,7 @@
     function SPPDModule({ pegawaiList = [], sppdList = [], settings = {}, currentUser, onSaved, onListRefresh, requestConfirm }) {
       const role = normalizeRole(currentUser?.role, currentUser);
       const makeFollower = () => ({ nip: '', nama: '', tanggalLahir: '', keterangan: '' });
-      const makeBlank = () => ({ nipPelaksana:'', pegawaiPelaksana:'', pangkatGolongan:'', jabatanInstansi:'', penggunaAnggaran:settings.headOfAgencyName || '', tingkatBiaya:'', maksudPerjalanan:'', alatAngkutan:'Kendaraan Dinas', tempatBerangkat:'Curup', tempatTujuan:'', lamaPerjalanan:'', tanggalBerangkat:'', tanggalKembali:'', instansiAnggaran:'DP3APPKB Kabupaten Rejang Lebong', akun:'', keterangan:'', tempatPenerbitan:'Curup', tanggalPenerbitan:new Date().toISOString().slice(0,10), penandatangan:(settings.headOfAgencyName || '') + '\nNIP. ' + (settings.headOfAgencyNIP || ''), lembarKe:'1 (Satu)', kodeNomor:'090', pengikut:[makeFollower(),makeFollower(),makeFollower()] });
+      const makeBlank = () => ({ nipPelaksana:'', pegawaiPelaksana:'', pangkatGolongan:'', jabatanInstansi:'', penggunaAnggaran:settings.headOfAgencyName || '', tingkatBiaya:'', maksudPerjalanan:'', alatAngkutan:'Kendaraan Dinas', tempatBerangkat:'Curup', tempatTujuan:'', lamaPerjalanan:'', tanggalBerangkat:'', tanggalKembali:'', instansiAnggaran:'DP3APPKB Kabupaten Rejang Lebong', akun:'', keterangan:'', tempatPenerbitan:'Curup', tanggalPenerbitan:jakartaDateKey(), penandatangan:(settings.headOfAgencyName || '') + '\nNIP. ' + (settings.headOfAgencyNIP || ''), lembarKe:'1 (Satu)', kodeNomor:'090', pengikut:[makeFollower(),makeFollower(),makeFollower()] });
       const [form,setForm]=useState(makeBlank); const [rows,setRows]=useState(sppdList); const [view,setView]=useState('list'); const [editingId,setEditingId]=useState(null); const [saving,setSaving]=useState(false); const [selected,setSelected]=useState(null); const [msg,setMsg]=useState('');
       useEffect(()=>setRows(sppdList || []),[sppdList]);
       useEffect(()=>{ let alive=true; const pull=()=>callGAS('getSppdData').then(r=>{if(alive&&r?.success){setRows(r.data||[]); if(onListRefresh)onListRefresh(r.data||[]);}}).catch(()=>{}); pull(); const t=setInterval(()=>{ if(!document.hidden) pull(); },60000); return()=>{alive=false;clearInterval(t)}; },[]);
@@ -2436,7 +2447,7 @@
       // Agenda & Rekapitulasi States
       const [agendaSubTab, setAgendaSubTab] = useState('keluar'); // 'keluar' | 'masuk'
       const [agendaMonth, setAgendaMonth] = useState(String(new Date().getMonth() + 1).padStart(2, '0'));
-      const [agendaYear, setAgendaYear] = useState('2026');
+      const [agendaYear, setAgendaYear] = useState(String(CURRENT_YEAR));
       const [agendaDept, setAgendaDept] = useState('all');
       const [isPreviewAgendaOpen, setIsPreviewAgendaOpen] = useState(false);
 
@@ -2539,7 +2550,7 @@
       // State Controlled Form Surat Keluar
       const [formSkDest, setFormSkDest] = useState('');
       const [formSkSubj, setFormSkSubj] = useState('');
-      const [formSkDate, setFormSkDate] = useState(() => new Date().toISOString().split('T')[0]);
+      const [formSkDate, setFormSkDate] = useState(() => jakartaDateKey());
       const [formSkCode, setFormSkCode] = useState('800');
       const [formSkNotes, setFormSkNotes] = useState('');
       const [formSkLetterKind, setFormSkLetterKind] = useState('biasa');
@@ -2592,8 +2603,8 @@
       const [formSmAgenda, setFormSmAgenda] = useState('');
       const [formSmNum, setFormSmNum] = useState('');
       const [formSmSender, setFormSmSender] = useState('');
-      const [formSmDate, setFormSmDate] = useState(() => new Date().toISOString().split('T')[0]);
-      const [formSmRecv, setFormSmRecv] = useState(() => new Date().toISOString().split('T')[0]);
+      const [formSmDate, setFormSmDate] = useState(() => jakartaDateKey());
+      const [formSmRecv, setFormSmRecv] = useState(() => jakartaDateKey());
       const [formSmSubj, setFormSmSubj] = useState('');
       const [formSmCategory, setFormSmCategory] = useState('Umum');
 
@@ -2602,7 +2613,7 @@
         setFormSkDest('');
         setFormSkSubj('');
         setFormSkNotes('');
-        setFormSkDate(new Date().toISOString().split('T')[0]);
+        setFormSkDate(jakartaDateKey());
         setFormSkCode('800');
         setFormSkLetterKind('biasa');
         setFormSkDeptId(normalizeRole(currentUser?.role) === 'admin' ? 'sekretariat' : (currentUser?.departmentId || 'sekretariat'));
@@ -2611,7 +2622,7 @@
       };
 
       const getNextAgendaNumber = (list = [], receivedDate = '') => {
-        const year = String(receivedDate || new Date().toISOString().slice(0, 10)).slice(0, 4);
+        const year = String(receivedDate || jakartaDateKey()).slice(0, 4);
         const maxNumber = (list || []).reduce((max, item) => {
           const agenda = String(item?.agendaNumber || '').trim();
           const match = agenda.match(/^(\d+).*\/SM\/(\d{4})$/i);
@@ -2623,12 +2634,12 @@
       };
 
       const resetSmForm = () => {
-        const nextAgenda = getNextAgendaNumber(suratMasukList, new Date().toISOString().slice(0, 10));
+        const nextAgenda = getNextAgendaNumber(suratMasukList, jakartaDateKey());
         setFormSmAgenda(nextAgenda);
         setFormSmNum('');
         setFormSmSender('');
-        setFormSmDate(new Date().toISOString().split('T')[0]);
-        setFormSmRecv(new Date().toISOString().split('T')[0]);
+        setFormSmDate(jakartaDateKey());
+        setFormSmRecv(jakartaDateKey());
         setFormSmSubj('');
         setSmSummary('');
         setFormSmCategory('Umum');
@@ -2885,7 +2896,7 @@
       // HANDLERS EDIT & PEMBATALAN SURAT (KHUSUS ADMIN TU)
       // ==========================================
       const handleSaveEditSuratKeluar = (formData) => {
-        const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 16);
+        const nowStr = jakartaNowStr();
         setSuratKeluarList((prev) =>
           prev.map((sk) => (sk.id === formData.id ? { ...sk, ...formData, updatedAt: nowStr } : sk))
         );
@@ -2905,7 +2916,7 @@
       };
 
       const handleConfirmBatalkanSuratKeluar = (id, reason) => {
-        const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 16);
+        const nowStr = jakartaNowStr();
         setSuratKeluarList((prev) =>
           prev.map((sk) => {
             if (sk.id === id) {
@@ -2959,7 +2970,7 @@
       };
 
       const handleConfirmBatalkanSuratMasuk = (id, reason) => {
-        const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 16);
+        const nowStr = jakartaNowStr();
         setSuratMasukList((prev) =>
           prev.map((sm) =>
             sm.id === id
@@ -4088,7 +4099,7 @@
             {/* Footer */}
             <div className="relative z-10 text-center py-2 text-[11px] text-slate-500">
               <p>
-                © 2026 {settings.agencyName || 'DP3APPKB'} • {settings.subTitle || 'Pemberdayaan Perempuan & Perlindungan Anak, Pengendalian Penduduk & KB'}
+                © {CURRENT_YEAR} {settings.agencyName || 'DP3APPKB'} • {settings.subTitle || 'Pemberdayaan Perempuan & Perlindungan Anak, Pengendalian Penduduk & KB'}
               </p>
             </div>
           </div>
@@ -5598,6 +5609,7 @@
                             onChange={(e) => setAgendaYear(e.target.value)}
                             className="text-xs rounded-md bg-transparent border-none text-slate-800 font-bold focus:ring-0 cursor-pointer py-1 pr-6"
                           >
+                            {EXTRA_YEARS.map((y) => <option key={y} value={String(y)}>{y}</option>)}
                             <option value="2026">2026</option>
                             <option value="2025">2025</option>
                             <option value="2024">2024</option>
@@ -7174,7 +7186,7 @@
                 <div className="px-6 py-4 bg-blue-600 text-white flex items-center justify-between"><div><h3 className="font-bold text-sm">{ekspEditing ? 'Ubah Ekspedisi' : 'Buat Ekspedisi Surat Keluar'}</h3><p className="text-[11px] text-blue-100">Satu surat dapat dikirim ke banyak OPD/penerima</p></div><button onClick={() => setIsEkspedisiOpen(false)}><Icon name="x" className="w-5 h-5" /></button></div>
                 <form key={ekspEditing?.id || 'baru'} onSubmit={(e) => { e.preventDefault(); const f=e.target; const sk=displaySuratKeluar.find(x => x.id === f.suratKeluarId.value); const recipients=f.recipientList.value.split('\n').map(x=>x.trim()).filter(Boolean).map(x=>{const p=x.split('|'); return {namaInstansi:p[0]||'', alamat:p[1]||'', nomorTelepon:p[2]||''};}); const pet=users.find(u=>u.id===f.petugasId.value); if (ekspEditing) { handleEditEkspedisi({id:ekspEditing.id, petugasId:f.petugasId.value, petugasNama:pet?.name||'', tanggalPengiriman:f.tanggalPengiriman.value, catatan:f.catatan.value, recipients}); return; } handleCreateEkspedisi({suratKeluarId:f.suratKeluarId.value, nomorSurat:sk?.fullLetterNumber||'', perihal:sk?.subject||'', petugasId:f.petugasId.value, petugasNama:pet?.name||'', tanggalPengiriman:f.tanggalPengiriman.value, catatan:f.catatan.value, recipients}); }} className="p-6 space-y-4 max-h-[78vh] overflow-y-auto text-xs">
                   <div><label className="block font-semibold mb-1">Pilih Surat Keluar</label><select name="suratKeluarId" required defaultValue={ekspEditing?.suratKeluarId || ''} disabled={!!ekspEditing} className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"><option value="">-- Pilih surat --</option>{displaySuratKeluar.filter(sk=>ekspEditing || !['menunggu_telaah','perlu_perbaikan'].includes(sk.status)).map(sk=><option key={sk.id} value={sk.id}>{sk.fullLetterNumber} — {sk.subject}</option>)}</select></div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><div><label className="block font-semibold mb-1">Petugas Ekspedisi</label><select name="petugasId" required defaultValue={ekspEditing?.petugasId || ''} className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"><option value="">-- Pilih petugas --</option>{users.filter(u=>normalizeRole(u.role,u)==='petugas_ekspedisi' && u.isActive !== false).map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></div><div><label className="block font-semibold mb-1">Tanggal Pengiriman</label><input type="date" name="tanggalPengiriman" defaultValue={ekspEditing?.tanggalPengiriman || new Date().toISOString().slice(0,10)} required className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" /></div></div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><div><label className="block font-semibold mb-1">Petugas Ekspedisi</label><select name="petugasId" required defaultValue={ekspEditing?.petugasId || ''} className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"><option value="">-- Pilih petugas --</option>{users.filter(u=>normalizeRole(u.role,u)==='petugas_ekspedisi' && u.isActive !== false).map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></div><div><label className="block font-semibold mb-1">Tanggal Pengiriman</label><input type="date" name="tanggalPengiriman" defaultValue={ekspEditing?.tanggalPengiriman || jakartaDateKey()} required className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" /></div></div>
                   <div><label className="block font-semibold mb-1">Daftar Penerima</label><textarea name="recipientList" required rows="6" defaultValue={ekspEditing ? (ekspEditing.recipients || []).map(r => [r.namaInstansi, r.alamat, r.nomorTelepon].join('|')).join('\n') : ''} placeholder={'Satu penerima per baris:\nDinas Pendidikan|Jl. Merdeka No. 1|0812xxxx\nDinas Kesehatan|Jl. Sudirman No. 2|0813xxxx'} className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 font-mono"></textarea><p className="text-[10px] text-slate-500 mt-1">Format: Nama OPD | Alamat | Nomor telepon (telepon opsional)</p></div>
                   <div><label className="block font-semibold mb-1">Catatan</label><textarea name="catatan" rows="2" defaultValue={ekspEditing?.catatan || ''} className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"></textarea></div>
                   <div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-700"><button type="button" onClick={()=>setIsEkspedisiOpen(false)} className="px-4 py-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800">Batal</button><button type="submit" disabled={isLoading} className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold disabled:opacity-50 disabled:cursor-not-allowed">{isLoading ? 'Menyimpan...' : (ekspEditing ? 'Simpan Perubahan' : 'Simpan Ekspedisi')}</button></div>
