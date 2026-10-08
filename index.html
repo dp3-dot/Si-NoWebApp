@@ -2509,6 +2509,73 @@
       return view==='form'?<div className="space-y-4"><div className="flex items-center justify-between"><h2 className="text-xl font-black">{editingId?'Edit SPPD':'Buat SPPD'}</h2><button onClick={()=>setView('list')} className="px-3 py-2 rounded-xl bg-slate-200 text-xs font-bold">Kembali ke Daftar</button></div>{renderForm()}</div>:listView;
     }
 
+    function EkspedisiRecipientEditor({ initialRecipients = [] }) {
+      const blankRecipient = () => ({ namaInstansi: '', alamat: '', nomorTelepon: '' });
+      const [rows, setRows] = useState(() => {
+        const existing = (initialRecipients || []).map((r) => ({ namaInstansi: r.namaInstansi || '', alamat: r.alamat || '', nomorTelepon: r.nomorTelepon || '' }));
+        return existing.length ? existing : Array.from({ length: 5 }, blankRecipient);
+      });
+      const [pasteOpen, setPasteOpen] = useState(false);
+      const [pasteText, setPasteText] = useState('');
+      const [preview, setPreview] = useState(null);
+      const [pasteError, setPasteError] = useState('');
+      const updateRow = (index, key, value) => setRows((prev) => prev.map((row, i) => i === index ? { ...row, [key]: value } : row));
+      const removeRow = (index) => setRows((prev) => prev.length <= 1 ? [blankRecipient()] : prev.filter((_, i) => i !== index));
+      const filledCount = rows.filter((r) => r.namaInstansi.trim() || r.alamat.trim() || r.nomorTelepon.trim()).length;
+      const duplicateIndexes = new Set();
+      const seenRecipients = new Map();
+      rows.forEach((r, i) => {
+        const key = `${r.namaInstansi.trim().toLocaleLowerCase()}|${r.alamat.trim().toLocaleLowerCase()}`;
+        if (!r.namaInstansi.trim() && !r.alamat.trim()) return;
+        if (seenRecipients.has(key)) { duplicateIndexes.add(i); duplicateIndexes.add(seenRecipients.get(key)); }
+        else seenRecipients.set(key, i);
+      });
+      const previewPaste = () => {
+        setPasteError('');
+        const rawLines = pasteText.split(/\r?\n/).map((line, index) => ({ line: line.trim(), lineNo: index + 1 })).filter((x) => x.line);
+        if (!rawLines.length) { setPreview(null); setPasteError('Tempel dulu daftar penerima dari Excel atau Google Sheets.'); return; }
+        const firstCells = rawLines[0].line.split(rawLines[0].line.includes('\t') ? '\t' : '|').map((x) => x.trim().toLocaleLowerCase());
+        const hasHeader = firstCells.length > 1 && /nama|opd|penerima/.test(firstCells[0]) && /alamat/.test(firstCells[1]);
+        const dataLines = hasHeader ? rawLines.slice(1) : rawLines;
+        const parsed = dataLines.map((item) => {
+          const delimiter = item.line.includes('\t') ? '\t' : '|';
+          const cells = item.line.split(delimiter).map((x) => x.trim());
+          return { lineNo: item.lineNo, namaInstansi: cells[0] || '', alamat: cells[1] || '', nomorTelepon: cells[2] || '', extraColumns: Math.max(0, cells.length - 3) };
+        });
+        const seen = new Set();
+        const rowsWithWarnings = parsed.map((r) => {
+          const warnings = [];
+          if (!r.namaInstansi) warnings.push('nama belum diisi');
+          if (!r.alamat) warnings.push('alamat kosong');
+          if (r.extraColumns) warnings.push('ada kolom tambahan yang tidak dipakai');
+          const key = `${r.namaInstansi.toLocaleLowerCase()}|${r.alamat.toLocaleLowerCase()}`;
+          if (r.namaInstansi && r.alamat && seen.has(key)) warnings.push('kemungkinan duplikat');
+          if (r.namaInstansi && r.alamat) seen.add(key);
+          return { ...r, warnings };
+        });
+        if (!rowsWithWarnings.length) { setPreview(null); setPasteError('Tidak ditemukan baris penerima.'); return; }
+        setPreview(rowsWithWarnings);
+      };
+      const usePreview = () => {
+        if (!preview?.length) return;
+        const imported = preview.map(({ namaInstansi, alamat, nomorTelepon }) => ({ namaInstansi, alamat, nomorTelepon }));
+        while (imported.length < 5) imported.push(blankRecipient());
+        setRows(imported);
+        setPasteOpen(false);
+        setPreview(null);
+        setPasteText('');
+        setPasteError('');
+      };
+      return <div className="space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-[11px] text-slate-500">Isi langsung di bawah atau tempel daftar dari Excel/Google Sheets. Nomor telepon opsional.</p><span className="rounded-full bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 px-2.5 py-1 text-[11px] font-bold">{filledCount} tujuan</span></div>
+        <div className="flex flex-wrap gap-2"><button type="button" onClick={() => { setPasteOpen((v) => !v); setPasteError(''); }} className="min-h-10 px-3 py-2 rounded-xl border border-blue-300 text-blue-700 dark:text-blue-300 dark:border-blue-800 font-bold text-xs">{pasteOpen ? 'Tutup tempel daftar' : 'Tempel daftar dari Excel/Google Sheets'}</button><button type="button" onClick={() => setRows((prev) => [...prev, blankRecipient()])} className="min-h-10 px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 font-bold text-xs">+ Tambah tujuan</button></div>
+        {pasteOpen && <div className="rounded-xl border border-blue-200 dark:border-blue-900 bg-blue-50/60 dark:bg-blue-950/20 p-3 space-y-2"><p className="text-xs font-bold">Salin 3 kolom—Nama OPD, Alamat, Telepon—dari Excel/Google Sheets, lalu tempel di kotak ini. Tidak perlu membuat file CSV.</p><p className="text-[11px] text-slate-600 dark:text-slate-300">Baris pertama boleh berisi judul kolom. Format lama dengan tanda | juga masih bisa ditempel.</p><textarea value={pasteText} onChange={(e) => { setPasteText(e.target.value); setPreview(null); setPasteError(''); }} rows="4" placeholder={'Nama OPD\tAlamat\tTelepon\nDinas Pendidikan\tJl. Merdeka No. 1\t0812xxxx'} className="w-full p-3 rounded-lg border border-slate-300 dark:border-slate-700 dark:bg-slate-900 font-mono text-xs" />{pasteError && <p role="alert" className="text-xs font-semibold text-rose-700">{pasteError}</p>}<button type="button" onClick={previewPaste} className="min-h-10 px-4 py-2 rounded-lg bg-blue-600 text-white font-bold text-xs">Pratinjau daftar</button>
+          {preview && <div className="space-y-2"><div className="rounded-lg bg-white dark:bg-slate-900 p-2 text-xs font-bold">{preview.length} baris penerima ditemukan. Periksa sebelum digunakan.</div><div className="max-h-48 overflow-y-auto rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 divide-y divide-slate-100 dark:divide-slate-800">{preview.map((r, i) => <div key={`${r.lineNo}-${i}`} className="p-2 text-[11px]"><p className="font-bold">Baris {r.lineNo}: {r.namaInstansi || '(nama kosong)'}</p><p className="text-slate-600 dark:text-slate-300">{r.alamat || '(alamat kosong)'}{r.nomorTelepon ? ` • ${r.nomorTelepon}` : ''}</p>{r.warnings.length > 0 && <p className="text-amber-700 dark:text-amber-300 mt-0.5">Periksa: {r.warnings.join(', ')}</p>}</div>)}</div><button type="button" onClick={usePreview} className="min-h-10 px-4 py-2 rounded-lg bg-emerald-600 text-white font-bold text-xs">Gunakan {preview.length} tujuan</button></div>}
+        </div>}
+        <div className="max-h-72 overflow-y-auto space-y-2 pr-1">{rows.map((row, index) => <div key={index} data-recipient-row className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-start rounded-xl border border-slate-200 dark:border-slate-700 p-2"><div className="sm:col-span-1 pt-2 text-[11px] font-bold text-slate-500">{index + 1}.</div><input data-recipient-field="namaInstansi" value={row.namaInstansi} onChange={(e) => updateRow(index, 'namaInstansi', e.target.value)} aria-label={`Nama OPD tujuan ${index + 1}`} placeholder="Nama OPD / penerima" className="sm:col-span-3 min-h-10 w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 text-xs" /><input data-recipient-field="alamat" value={row.alamat} onChange={(e) => updateRow(index, 'alamat', e.target.value)} aria-label={`Alamat tujuan ${index + 1}`} placeholder="Alamat tujuan" className="sm:col-span-5 min-h-10 w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 text-xs" /><input data-recipient-field="nomorTelepon" value={row.nomorTelepon} onChange={(e) => updateRow(index, 'nomorTelepon', e.target.value)} aria-label={`Nomor telepon tujuan ${index + 1}`} placeholder="Telepon (opsional)" inputMode="tel" className="sm:col-span-2 min-h-10 w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 dark:bg-slate-900 text-xs" /><button type="button" onClick={() => removeRow(index)} aria-label={`Hapus tujuan ${index + 1}`} className="sm:col-span-1 min-h-10 px-3 rounded-lg text-rose-700 hover:bg-rose-50 dark:hover:bg-rose-950/30 font-bold text-xs">Hapus</button>{duplicateIndexes.has(index) && <p className="sm:col-start-2 sm:col-span-11 text-[10px] text-amber-700 dark:text-amber-300">Periksa: nama dan alamat ini mirip dengan tujuan lain.</p>}</div>)}</div>
+      </div>;
+    }
+
     function App() {
       const [isLoading, setIsLoading] = useState(true);
       const [isDataReady, setIsDataReady] = useState(false);
@@ -2950,7 +3017,7 @@
         if (!currentUser) return;
         const role = normalizeRole(currentUser.role, currentUser);
         if (role === 'petugas_ekspedisi') {
-          if (activeTab !== 'ekspedisi' && activeTab !== 'kinerja') {
+          if (activeTab !== 'dashboard' && activeTab !== 'ekspedisi' && activeTab !== 'kinerja') {
             setActiveTab('ekspedisi');
             showToast('Mode Petugas Ekspedisi', 'Anda hanya dapat mengakses tugas ekspedisi yang ditugaskan.', 'info');
           }
@@ -7467,10 +7534,10 @@
             <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
               <div className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden border border-slate-200 dark:border-slate-700">
                 <div className="px-6 py-4 bg-blue-600 text-white flex items-center justify-between"><div><h3 className="font-bold text-sm">{ekspEditing ? 'Ubah Ekspedisi' : 'Buat Ekspedisi Surat Keluar'}</h3><p className="text-[11px] text-blue-100">Satu surat dapat dikirim ke banyak OPD/penerima</p></div><button onClick={() => setIsEkspedisiOpen(false)}><Icon name="x" className="w-5 h-5" /></button></div>
-                <form key={ekspEditing?.id || 'baru'} onSubmit={(e) => { e.preventDefault(); const f=e.target; const sk=displaySuratKeluar.find(x => x.id === f.suratKeluarId.value); const recipients=f.recipientList.value.split('\n').map(x=>x.trim()).filter(Boolean).map(x=>{const p=x.split('|'); return {namaInstansi:p[0]||'', alamat:p[1]||'', nomorTelepon:p[2]||''};}); const pet=users.find(u=>u.id===f.petugasId.value); if (ekspEditing) { handleEditEkspedisi({id:ekspEditing.id, petugasId:f.petugasId.value, petugasNama:pet?.name||'', tanggalPengiriman:f.tanggalPengiriman.value, catatan:f.catatan.value, recipients}); return; } handleCreateEkspedisi({suratKeluarId:f.suratKeluarId.value, nomorSurat:sk?.fullLetterNumber||'', perihal:sk?.subject||'', petugasId:f.petugasId.value, petugasNama:pet?.name||'', tanggalPengiriman:f.tanggalPengiriman.value, catatan:f.catatan.value, recipients}); }} className="p-6 space-y-4 max-h-[78vh] overflow-y-auto text-xs">
+                <form key={ekspEditing?.id || 'baru'} onSubmit={(e) => { e.preventDefault(); const f=e.target; const sk=displaySuratKeluar.find(x => x.id === f.suratKeluarId.value); const inputRows=Array.from(f.querySelectorAll('[data-recipient-row]')).map((row,index)=>({rowNo:index+1,recipient:{namaInstansi:row.querySelector('[data-recipient-field=namaInstansi]').value.trim(),alamat:row.querySelector('[data-recipient-field=alamat]').value.trim(),nomorTelepon:row.querySelector('[data-recipient-field=nomorTelepon]').value.trim()}})).filter(x=>x.recipient.namaInstansi||x.recipient.alamat||x.recipient.nomorTelepon); if(!inputRows.length){showToast('Daftar tujuan kosong','Isi setidaknya satu tujuan.','alert');return;} const incomplete=inputRows.find(x=>!x.recipient.namaInstansi||!x.recipient.alamat); if(incomplete){showToast('Periksa daftar tujuan',`Baris ${incomplete.rowNo}: nama dan alamat wajib diisi. Nomor telepon opsional.`,'alert');return;} const recipients=inputRows.map(x=>x.recipient); const pet=users.find(u=>u.id===f.petugasId.value); if (ekspEditing) { handleEditEkspedisi({id:ekspEditing.id, petugasId:f.petugasId.value, petugasNama:pet?.name||'', tanggalPengiriman:f.tanggalPengiriman.value, catatan:f.catatan.value, recipients}); return; } handleCreateEkspedisi({suratKeluarId:f.suratKeluarId.value, nomorSurat:sk?.fullLetterNumber||'', perihal:sk?.subject||'', petugasId:f.petugasId.value, petugasNama:pet?.name||'', tanggalPengiriman:f.tanggalPengiriman.value, catatan:f.catatan.value, recipients}); }} className="p-6 space-y-4 max-h-[78vh] overflow-y-auto text-xs">
                   <div><label className="block font-semibold mb-1">Pilih Surat Keluar</label><select name="suratKeluarId" required defaultValue={ekspEditing?.suratKeluarId || ''} disabled={!!ekspEditing} className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"><option value="">-- Pilih surat --</option>{displaySuratKeluar.filter(sk=>ekspEditing || !['menunggu_telaah','perlu_perbaikan'].includes(sk.status)).map(sk=><option key={sk.id} value={sk.id}>{sk.fullLetterNumber} — {sk.subject}</option>)}</select></div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><div><label className="block font-semibold mb-1">Petugas Ekspedisi</label><select name="petugasId" required defaultValue={ekspEditing?.petugasId || ''} className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"><option value="">-- Pilih petugas --</option>{users.filter(u=>normalizeRole(u.role,u)==='petugas_ekspedisi' && u.isActive !== false).map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></div><div><label className="block font-semibold mb-1">Tanggal Pengiriman</label><input type="date" name="tanggalPengiriman" defaultValue={ekspEditing?.tanggalPengiriman || jakartaDateKey()} required className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" /></div></div>
-                  <div><label className="block font-semibold mb-1">Daftar Penerima</label><textarea name="recipientList" required rows="6" defaultValue={ekspEditing ? (ekspEditing.recipients || []).map(r => [r.namaInstansi, r.alamat, r.nomorTelepon].join('|')).join('\n') : ''} placeholder={'Satu penerima per baris:\nDinas Pendidikan|Jl. Merdeka No. 1|0812xxxx\nDinas Kesehatan|Jl. Sudirman No. 2|0813xxxx'} className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 font-mono"></textarea><p className="text-[10px] text-slate-500 mt-1">Format: Nama OPD | Alamat | Nomor telepon (telepon opsional)</p></div>
+                  <div><label className="block font-semibold mb-1">Daftar Tujuan</label><EkspedisiRecipientEditor initialRecipients={ekspEditing?.recipients || []} /><p className="text-[10px] text-slate-500 mt-1">Nama dan alamat wajib diisi; nomor telepon opsional. Alamat membantu kurir menemukan tujuan.</p></div>
                   <div><label className="block font-semibold mb-1">Catatan</label><textarea name="catatan" rows="2" defaultValue={ekspEditing?.catatan || ''} className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"></textarea></div>
                   <div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-700"><button type="button" onClick={()=>setIsEkspedisiOpen(false)} className="px-4 py-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800">Batal</button><button type="submit" disabled={isLoading} className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold disabled:opacity-50 disabled:cursor-not-allowed">{isLoading ? 'Menyimpan...' : (ekspEditing ? 'Simpan Perubahan' : 'Simpan Ekspedisi')}</button></div>
                 </form>
