@@ -2635,6 +2635,12 @@
         setIsTambahSuratMasukOpen(true);
       };
 
+      // Pengaman: berapa pun jalur pembukaan form, dan bila daftar surat baru selesai dimuat,
+      // pratinjau nomor agenda dihitung ulang. Nomor final tetap ditetapkan server saat disimpan.
+      useEffect(() => {
+        if (isTambahSuratMasukOpen) setFormSmAgenda(getNextAgendaNumber(suratMasukList, formSmRecv));
+      }, [isTambahSuratMasukOpen, suratMasukList, formSmRecv]);
+
       const readAttachmentFile = (file, pageNumber) => new Promise((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = (ev) => resolve({
@@ -4505,7 +4511,7 @@
 
                           {canManageSuratMasuk(currentUser) && (
                             <button
-                              onClick={() => setIsTambahSuratMasukOpen(true)}
+                              onClick={openTambahSuratMasukModal}
                               className="inline-flex items-center justify-center gap-2 px-4 py-3 rounded-2xl bg-white/10 hover:bg-white/20 text-white font-semibold text-xs transition-colors backdrop-blur-xs"
                             >
                               <Icon name="mail" className="w-4 h-4 text-emerald-400" />
@@ -8319,15 +8325,15 @@
 
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block font-semibold mb-1 text-slate-700 dark:text-slate-300">No. Agenda</label>
+                      <label className="block font-semibold mb-1 text-slate-700 dark:text-slate-300">No. Agenda (otomatis)</label>
                       <input
                         type="text"
                         name="agendaNumber"
                         value={formSmAgenda}
-                        onChange={(e) => setFormSmAgenda(e.target.value)}
-                        className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono font-bold"
-                        required
+                        readOnly
+                        className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-100 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 font-mono font-bold cursor-not-allowed"
                       />
+                      <p className="mt-1 text-[10px] text-slate-500 dark:text-slate-400">Nomor final ditetapkan otomatis saat disimpan.</p>
                     </div>
                     <div>
                       <label className="block font-semibold mb-1 text-slate-700 dark:text-slate-300">Nomor Surat Pengirim</label>
