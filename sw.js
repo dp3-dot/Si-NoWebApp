@@ -1,9 +1,9 @@
 // Service worker E-Surat. Naikkan nomor versi di bawah setiap kali Anda mengunggah versi baru ke GitHub.
-const C = 'esurat-v8';
+const C = 'esurat-v9-courier';
 const CDN = ['cdnjs.cloudflare.com', 'cdn.jsdelivr.net', 'cdn.tailwindcss.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(C).then(c => c.addAll(['./', 'index.html', 'manifest.webmanifest', 'icon-192.png'])));
+  e.waitUntil(caches.open(C).then(c => c.addAll(['./', 'index.html', 'config.js', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'])));
   self.skipWaiting();
 });
 
@@ -35,6 +35,17 @@ self.addEventListener('fetch', e => {
           return hit || net;
         })
       )
+    );
+    return;
+  }
+
+  // Aset frontend same-origin yang sudah diprecache tetap tersedia ketika koneksi putus.
+  if (url.origin === self.location.origin) {
+    e.respondWith(
+      caches.open(C).then(cache => cache.match(req).then(hit => hit || fetch(req).then(res => {
+        if (res && res.ok) cache.put(req, res.clone());
+        return res;
+      })))
     );
   }
 });

@@ -328,6 +328,78 @@
       }
     };
 
+    // Antrean bukti kurir lokal (IndexedDB), diproses saat koneksi pulih.
+    const COURIER_QUEUE_DB = 'sinomer-courier-v2';
+    const COURIER_QUEUE_STORE = 'pending-actions';
+    function openCourierQueueDb() {
+      return new Promise((resolve, reject) => {
+        if (!('indexedDB' in window)) return reject(new Error('Penyimpanan offline tidak tersedia di browser ini.'));
+        const req = indexedDB.open(COURIER_QUEUE_DB, 1);
+        req.onupgradeneeded = () => { if (!req.result.objectStoreNames.contains(COURIER_QUEUE_STORE)) req.result.createObjectStore(COURIER_QUEUE_STORE, { keyPath: 'id' }); };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error || new Error('Gagal membuka antrean offline.'));
+      });
+    }
+    async function putCourierQueueItem(item) {
+      const db = await openCourierQueueDb();
+      await new Promise((resolve, reject) => { const tx = db.transaction(COURIER_QUEUE_STORE, 'readwrite'); tx.objectStore(COURIER_QUEUE_STORE).put(item); tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+      db.close();
+    }
+    async function getCourierQueueItems() {
+      const db = await openCourierQueueDb();
+      const items = await new Promise((resolve, reject) => { const req = db.transaction(COURIER_QUEUE_STORE, 'readonly').objectStore(COURIER_QUEUE_STORE).getAll(); req.onsuccess = () => resolve(req.result || []); req.onerror = () => reject(req.error); });
+      db.close();
+      return items.sort((a, b) => a.createdAt - b.createdAt);
+    }
+    async function deleteCourierQueueItem(id) {
+      const db = await openCourierQueueDb();
+      await new Promise((resolve, reject) => { const tx = db.transaction(COURIER_QUEUE_STORE, 'readwrite'); tx.objectStore(COURIER_QUEUE_STORE).delete(id); tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+      db.close();
+    }
+    function isCourierNetworkFailure(err) {
+      return !navigator.onLine || /tidak bisa terhubung|periksa internet|failed to fetch|networkerror/i.test(String(err && err.message || err));
+    }
+    function getOptionalCourierLocation(enabled) {
+      if (!enabled || !navigator.geolocation) return Promise.resolve(null);
+      return new Promise((resolve) => navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy || 0) }),
+        () => resolve(null), { enableHighAccuracy: true, timeout: 7000, maximumAge: 60000 }
+      ));
+    }
+    function compressCourierPhoto(file, timestampLabel, location) {
+      if (!file) return Promise.resolve('');
+      return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          try {
+            let result = '';
+            for (const maxSide of [1200, 960, 760, 600]) {
+              const scale = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+              const canvas = document.createElement('canvas');
+              canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+              canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+              const ctx = canvas.getContext('2d');
+              ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+              const stamp = timestampLabel + (location ? ` • ${location.latitude.toFixed(5)}, ${location.longitude.toFixed(5)}` : ' • lokasi tidak dibagikan');
+              const barH = Math.max(30, Math.round(canvas.height * 0.09));
+              ctx.fillStyle = 'rgba(0,0,0,.68)'; ctx.fillRect(0, canvas.height - barH, canvas.width, barH);
+              ctx.fillStyle = '#fff'; ctx.font = `${Math.max(12, Math.round(barH * 0.34))}px sans-serif`; ctx.textBaseline = 'middle';
+              ctx.fillText(stamp.slice(0, 110), 10, canvas.height - barH / 2, canvas.width - 20);
+              for (const quality of [0.72, 0.60, 0.50, 0.40, 0.32]) {
+                result = canvas.toDataURL('image/jpeg', quality);
+                if (result.length <= 47000) { URL.revokeObjectURL(url); resolve(result); return; }
+              }
+            }
+            URL.revokeObjectURL(url);
+            reject(new Error('Foto masih terlalu besar setelah dikompres. Ambil foto lebih dekat atau gunakan resolusi lebih rendah.'));
+          } catch (err) { URL.revokeObjectURL(url); reject(err); }
+        };
+        img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Foto tidak dapat dibaca. Coba ambil ulang sebagai JPG/JPEG.')); };
+        img.src = url;
+      });
+    }
+
     // ==========================================
     // AUDIO CHIME NOTIFIKASI (Web Audio API)
     // ==========================================
@@ -2509,6 +2581,7 @@
       const liveLastCheckRef = useRef(null);
       const livePollingBusyRef = useRef(false);
       const liveHasPolledRef = useRef(false);
+      const courierFlushBusyRef = useRef(false);
 
       // Modal States
       const [isAmbilNomorOpen, setIsAmbilNomorOpen] = useState(false);
@@ -2516,6 +2589,8 @@
       const [isEkspedisiOpen, setIsEkspedisiOpen] = useState(false);
       const [ekspEditing, setEkspEditing] = useState(null);
       const [activeEkspedisiRecipient, setActiveEkspedisiRecipient] = useState(null);
+      const [deliveryFormStatus, setDeliveryFormStatus] = useState('diterima');
+      const [pendingDeliverySyncCount, setPendingDeliverySyncCount] = useState(0);
       const [printEkspedisiReceipt, setPrintEkspedisiReceipt] = useState(null);
       const signatureCanvasRef = useRef(null);
       const [activeDisposisiModalSurat, setActiveDisposisiModalSurat] = useState(null);
@@ -3536,18 +3611,74 @@
           .catch((err) => { setIsLoading(false); showToast('Telaah Gagal', err.message || 'Terjadi kesalahan.', 'alert'); });
       };
 
-      const handleUpdateEkspedisiRecipient = (data) => {
-        setIsLoading(true);
-        callGAS('updateEkspedisiPenerima', data)
-          .then((res) => {
-            setIsLoading(false);
-            if (!res || res.success === false) { showToast('Bukti Gagal Disimpan', res?.error || 'Data penerimaan gagal disimpan.', 'alert'); return; }
-            setEkspedisiList((prev) => prev.map((e) => ({ ...e, recipients: (e.recipients || []).map((r) => r.id === data.recipientId ? { ...r, ...data, status: res.status, deliveredAt: res.deliveredAt } : r) })));
-            setActiveEkspedisiRecipient(null);
-            showToast('Bukti Penerimaan Tersimpan', 'Status penerima berhasil diperbarui.', 'success');
-          })
-          .catch((err) => { setIsLoading(false); showToast('Bukti Gagal Disimpan', err.message || 'Terjadi kesalahan.', 'alert'); });
+      const openDeliveryForm = (recipient, initialStatus = 'diterima') => { setDeliveryFormStatus(initialStatus); setActiveEkspedisiRecipient(recipient); };
+      const patchCourierRecipient = (recipientId, patch) => setEkspedisiList((prev) => prev.map((e) => ({ ...e, recipients: (e.recipients || []).map((r) => r.id === recipientId ? { ...r, ...patch } : r) })));
+      const enqueueCourierAction = async (api, data) => {
+        const id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `q-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        await putCourierQueueItem({ id, api, data, userId: String(currentUser?.id || ''), createdAt: Date.now() });
+        const items = await getCourierQueueItems(); setPendingDeliverySyncCount(items.length);
       };
+      const handleUpdateEkspedisiTahap = async (recipient, status) => {
+        const data = { recipientId: recipient.id, status };
+        try {
+          const res = await callGAS('updateEkspedisiTahap', data);
+          if (!res || res.success === false) throw new Error(res?.error || 'Status tidak dapat diperbarui.');
+          patchCourierRecipient(recipient.id, { status: res.status || status });
+          showToast('Status diperbarui', `Tugas sekarang: ${String(res.status || status).replaceAll('_',' ')}.`, 'success');
+        } catch (err) {
+          if (!isCourierNetworkFailure(err)) { showToast('Status gagal diperbarui', err.message || 'Terjadi kesalahan.', 'alert'); return; }
+          try { await enqueueCourierAction('updateEkspedisiTahap', data); patchCourierRecipient(recipient.id, { status }); showToast('Disimpan offline', 'Status akan dikirim otomatis saat jaringan kembali.', 'info'); }
+          catch (queueErr) { showToast('Tidak dapat menyimpan offline', queueErr.message || 'Periksa ruang penyimpanan ponsel.', 'alert'); }
+        }
+      };
+      const handleUpdateEkspedisiRecipient = async (data) => {
+        setIsLoading(true);
+        try {
+          const res = await callGAS('updateEkspedisiPenerima', data);
+          if (!res || res.success === false) throw new Error(res?.error || 'Data penerimaan gagal disimpan.');
+          patchCourierRecipient(data.recipientId, { ...data, status: res.status, deliveredAt: res.deliveredAt, failureReason: res.failureReason || '', updatedAt: res.updatedAt || new Date().toISOString(), locationLat: res.locationLat || '', locationLng: res.locationLng || '', locationAccuracy: res.locationAccuracy || '' });
+          setActiveEkspedisiRecipient(null);
+          showToast('Bukti tersimpan', 'Status penerima berhasil diperbarui.', 'success');
+        } catch (err) {
+          if (!isCourierNetworkFailure(err)) { showToast('Bukti gagal disimpan', err.message || 'Terjadi kesalahan.', 'alert'); return; }
+          try {
+            await enqueueCourierAction('updateEkspedisiPenerima', data);
+            patchCourierRecipient(data.recipientId, { ...data, updatedAt: new Date().toISOString() });
+            setActiveEkspedisiRecipient(null);
+            showToast('Bukti disimpan di ponsel', 'Akan dikirim otomatis saat jaringan kembali. Jangan hapus data browser sebelum antrean selesai.', 'info');
+          } catch (queueErr) { showToast('Antrean offline gagal', queueErr.message || 'Periksa ruang penyimpanan ponsel.', 'alert'); }
+        } finally { setIsLoading(false); }
+      };
+      const flushCourierOutbox = async () => {
+        if (courierFlushBusyRef.current) return;
+        courierFlushBusyRef.current = true;
+        let items;
+        try { items = await getCourierQueueItems(); setPendingDeliverySyncCount(items.length); }
+        catch (err) { console.warn('Antrean offline tidak dapat dibaca:', err); courierFlushBusyRef.current = false; return; }
+        const ownedItems = items.filter((item) => !item.userId || item.userId === String(currentUser?.id || ''));
+        for (const item of ownedItems) {
+          try { const result = await callGAS(item.api, item.data); if (!result || result.success === false) throw new Error(result?.error || 'Server menolak satu perubahan offline.'); await deleteCourierQueueItem(item.id); }
+          catch (err) { if (!isCourierNetworkFailure(err)) showToast('Antrean perlu ditinjau', err.message || 'Satu item belum dapat dikirim.', 'alert'); break; }
+        }
+        try { const rest = await getCourierQueueItems(); setPendingDeliverySyncCount(rest.length); if (!rest.length && items.length) { showToast('Sinkronisasi selesai', 'Semua bukti offline berhasil dikirim.', 'success'); loadDataFromSheets(currentUser); } }
+        catch (err) { console.warn(err); }
+        finally { courierFlushBusyRef.current = false; }
+      };
+      useEffect(() => {
+        if (!currentUser || normalizeRole(currentUser.role, currentUser) !== 'petugas_ekspedisi') return undefined;
+        const flush = () => { if (navigator.onLine) flushCourierOutbox(); };
+        getCourierQueueItems().then((items) => setPendingDeliverySyncCount(items.length)).catch(() => {});
+        window.addEventListener('online', flush); flush();
+        return () => window.removeEventListener('online', flush);
+      }, [currentUser?.id]);
+      const dailyCourierSummary = () => {
+        const today = jakartaDateKey();
+        const stops = (ekspedisiList || []).filter((e) => String(e.tanggalPengiriman || '').slice(0,10) === today).flatMap((e) => e.recipients || []);
+        const done = stops.filter((r) => r.status === 'diterima').length;
+        const lines = stops.map((r) => `• ${r.namaInstansi}: ${String(r.status || 'ditugaskan').replaceAll('_',' ')}${r.failureReason ? ' — ' + r.failureReason : ''}`);
+        return `Laporan kurir ${currentUser?.name || ''} • ${today}\nProgres: ${done} dari ${stops.length} terantar\n${lines.join('\n')}`;
+      };
+      const shareCourierSummary = () => { const href = `https://wa.me/?text=${encodeURIComponent(dailyCourierSummary())}`; window.open(href, '_blank', 'noopener,noreferrer'); };
 
       // 3. Eksekusi Simpan Disposisi (Admin & Pimpinan)
       const handleSimpanDisposisi = (dispData) => {
@@ -3911,8 +4042,8 @@
         if (role === 'petugas_ekspedisi') {
           return [
             { id: 'dashboard', label: 'Dashboard Petugas', icon: 'building' },
-            { id: 'kinerja', label: 'Laporan Kinerja Saya', icon: 'printer' },
-            { id: 'ekspedisi', label: 'Tugas Ekspedisi', icon: 'send', badge: ekspedisiList.filter((e) => !(e.recipients || []).length || !(e.recipients || []).every((r) => r.status === 'diterima')).length || null },
+            { id: 'ekspedisi', label: 'Tugas Ekspedisi', icon: 'send', badge: ekspedisiList.filter((e) => !(e.recipients || []).length || !(e.recipients || []).some((r) => ['diterima','tidak_ditemui','ditolak','dijadwalkan_ulang'].includes(r.status))).length || null },
+            { id: 'kinerja', label: 'Laporan Kinerja', icon: 'printer' },
           ];
         }
 
@@ -4247,9 +4378,9 @@
             </div>
 
             <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-              <button type="button" onClick={() => setIsMobileNavOpen(!isMobileNavOpen)} className="lg:hidden fixed right-3 top-3 z-[80] p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 shadow-md" title="Buka menu navigasi" aria-label="Buka menu navigasi">
+              {normalizeRole(currentUser?.role, currentUser) !== 'petugas_ekspedisi' && <button type="button" onClick={() => setIsMobileNavOpen(!isMobileNavOpen)} className="lg:hidden fixed right-3 top-3 z-[80] p-2 rounded-xl bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 shadow-md" title="Buka menu navigasi" aria-label="Buka menu navigasi">
                 <Icon name="menu" className="w-5 h-5" />
-              </button>
+              </button>}
               {/* Role Indicator Badge */}
               {currentUser && (
                 <div className="hidden lg:flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-bold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
@@ -4557,6 +4688,25 @@
               {/* TAB 1: DASHBOARD */}
               {activeTab === 'dashboard' && (() => {
                 const isSuper = normalizeRole(currentUser?.role, currentUser) === 'admin' || normalizeRole(currentUser?.role, currentUser) === 'pimpinan';
+                if (normalizeRole(currentUser?.role, currentUser) === 'petugas_ekspedisi') {
+                  const today = jakartaDateKey();
+                  const todaysRuns = (ekspedisiList || []).filter((e) => String(e.tanggalPengiriman || '').slice(0, 10) === today);
+                  const stops = todaysRuns.flatMap((e) => (e.recipients || []).map((r) => ({ ...r, ekspedisi: e })));
+                  const delivered = stops.filter((r) => r.status === 'diterima').length;
+                  const terminal = (r) => ['diterima','tidak_ditemui','ditolak','dijadwalkan_ulang'].includes(r.status);
+                  const phoneDigits = (value) => { let n = String(value || '').replace(/\D/g, ''); if (n.startsWith('0')) n = '62' + n.slice(1); return n; };
+                  const shareText = `Laporan kurir ${currentUser?.name || ''} • ${today}\nProgres: ${delivered} dari ${stops.length} terantar\n` + stops.map((r) => `• ${r.namaInstansi}: ${r.status === 'belum_diantar' ? 'ditugaskan' : String(r.status || 'ditugaskan').replaceAll('_',' ')}${r.failureReason ? ' — ' + r.failureReason : ''}`).join('\n');
+                  return <div className="space-y-4 pb-24 lg:pb-6">
+                    <div className="rounded-3xl bg-slate-950 text-white p-5 sm:p-7 shadow-lg">
+                      <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-bold text-emerald-300">Tugas Hari Ini</p><h1 className="text-2xl sm:text-3xl font-black mt-1">Halo, {currentUser?.name?.split(',')[0]}</h1><p className="text-sm text-slate-300 mt-1">{new Date().toLocaleDateString('id-ID',{weekday:'long',day:'numeric',month:'long',year:'numeric'})}</p></div><button onClick={shareCourierSummary} className="min-h-12 px-4 py-3 rounded-xl bg-emerald-500 text-white font-bold text-sm">Bagikan Ringkasan WhatsApp</button></div>
+                      <div className="mt-5 flex items-end gap-3"><strong className="text-4xl font-black">{delivered}<span className="text-2xl text-slate-400">/{stops.length}</span></strong><span className="pb-1 text-sm text-slate-300">penerima terantar hari ini</span></div>
+                      <div className="mt-3 h-3 rounded-full bg-slate-700 overflow-hidden"><div className="h-full bg-emerald-400 transition-all" style={{width: `${stops.length ? Math.min(100, delivered/stops.length*100) : 0}%`}} /></div>
+                      {pendingDeliverySyncCount > 0 && <p className="mt-3 rounded-xl bg-amber-400/15 border border-amber-300/30 p-3 text-sm font-semibold text-amber-100">{pendingDeliverySyncCount} perubahan tersimpan di ponsel dan menunggu jaringan. Akan dikirim otomatis saat tersambung.</p>}
+                    </div>
+                    {stops.length === 0 ? <div className="rounded-2xl bg-white dark:bg-slate-900 p-8 text-center border border-slate-200 dark:border-slate-800"><p className="font-bold">Belum ada tugas untuk hari ini.</p><button onClick={() => setActiveTab('ekspedisi')} className="mt-3 px-5 py-3 rounded-xl bg-emerald-600 text-white font-bold">Lihat semua tugas</button></div> : <div className="space-y-3">{stops.map((r) => { const e=r.ekspedisi; const tel=phoneDigits(r.nomorTelepon); const map=`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(r.alamat || r.namaInstansi || '')}`; const wa=`https://wa.me/${tel}?text=${encodeURIComponent(`Halo, saya kurir dari DP3APPKB. Saya akan mengantar surat ${e.nomorSurat || ''} ke ${r.namaInstansi}.`)}`; const status=r.status==='belum_diantar'?'ditugaskan':r.status; return <article key={r.id} className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 shadow-sm"><div className="flex flex-wrap items-start justify-between gap-2"><div><p className="text-xs font-bold text-blue-700 dark:text-blue-300">{e.nomorSurat || 'Surat ekspedisi'} • {e.perihal || ''}</p><h2 className="text-lg font-extrabold mt-1">{r.namaInstansi}</h2><p className="text-sm text-slate-600 dark:text-slate-300 mt-1">{r.alamat || 'Alamat belum diisi'}</p><p className="mt-2 inline-flex rounded-full px-3 py-1 bg-slate-100 dark:bg-slate-800 text-xs font-bold">{String(status).replaceAll('_',' ')}</p></div></div><div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-4">{tel && <a href={`tel:${tel}`} className="min-h-12 flex items-center justify-center rounded-xl bg-blue-600 text-white font-bold text-sm">Telepon</a>}{tel && <a href={wa} target="_blank" rel="noopener noreferrer" className="min-h-12 flex items-center justify-center rounded-xl bg-emerald-600 text-white font-bold text-sm">WhatsApp</a>}<a href={map} target="_blank" rel="noopener noreferrer" className="min-h-12 flex items-center justify-center rounded-xl bg-slate-800 text-white font-bold text-sm">Navigasi</a>{!terminal(r) && status==='ditugaskan' && <button onClick={() => handleUpdateEkspedisiTahap(r,'dalam_perjalanan')} className="min-h-12 rounded-xl bg-amber-500 text-slate-950 font-extrabold text-sm">Mulai perjalanan</button>}{!terminal(r) && status==='dalam_perjalanan' && <button onClick={() => handleUpdateEkspedisiTahap(r,'tiba')} className="min-h-12 rounded-xl bg-amber-500 text-slate-950 font-extrabold text-sm">Saya tiba</button>}{!terminal(r) && status==='tiba' && <button onClick={() => openDeliveryForm(r)} className="min-h-12 rounded-xl bg-emerald-700 text-white font-extrabold text-sm">Catat hasil</button>}{status==='diterima' && <button onClick={() => setPrintEkspedisiReceipt({eksp:e,recipient:r})} className="min-h-12 rounded-xl bg-slate-700 text-white font-bold text-sm">Lihat bukti</button>}</div></article>; })}</div>}
+                    <button onClick={() => setActiveTab('ekspedisi')} className="w-full min-h-12 rounded-xl border border-slate-300 dark:border-slate-700 font-bold">Buka riwayat dan semua tugas</button>
+                  </div>;
+                }
                 if (normalizeRole(currentUser?.role, currentUser) === 'penelaah_teknis') {
                   return <PenelaahDashboard currentUser={currentUser} telaahList={telaahList} onOpenTelaah={() => setActiveTab('telaah')} onOpenKinerja={() => setActiveTab('kinerja')} />;
                 }
@@ -4999,12 +5149,12 @@
                   </div>
                   {visibleEkspedisiList.length === 0 ? <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-12 text-center text-slate-400">Tidak ada data untuk filter yang dipilih.</div> : visibleEkspedisiList.map((eksp) => {
                     const done = (eksp.recipients || []).filter(r => r.status === 'diterima').length;
-                    const shownRecipients = ekspedisiStatusFilter === 'aktif' ? (eksp.recipients || []).filter(r => r.status !== 'diterima') : ekspedisiStatusFilter === 'tertunda' ? (eksp.recipients || []).filter(r => r.status === 'dijadwalkan_ulang') : ekspedisiStatusFilter === 'dibatalkan' ? (eksp.recipients || []).filter(r => r.status === 'ditolak' || r.status === 'tidak_ditemui') : (eksp.recipients || []);
+                    const shownRecipients = ekspedisiStatusFilter === 'aktif' ? (eksp.recipients || []).filter(r => !['diterima','tidak_ditemui','ditolak','dijadwalkan_ulang'].includes(r.status)) : ekspedisiStatusFilter === 'tertunda' ? (eksp.recipients || []).filter(r => r.status === 'dijadwalkan_ulang') : ekspedisiStatusFilter === 'dibatalkan' ? (eksp.recipients || []).filter(r => r.status === 'ditolak' || r.status === 'tidak_ditemui') : (eksp.recipients || []);
                     return <div key={eksp.id} className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-5 shadow-xs space-y-4">
-                      {canManageEkspedisi(currentUser) && (eksp.recipients || []).every(r => r.status === 'belum_diantar') && <div className="flex justify-end gap-2 text-[11px] font-bold"><button onClick={() => { setEkspEditing(eksp); setIsEkspedisiOpen(true); }} className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800">Edit</button><button onClick={() => handleDeleteEkspedisi(eksp)} className="px-3 py-1.5 rounded-lg border border-rose-300 text-rose-600 hover:bg-rose-50">Hapus</button></div>}
+                      {canManageEkspedisi(currentUser) && (eksp.recipients || []).every(r => ['belum_diantar','ditugaskan'].includes(r.status)) && <div className="flex justify-end gap-2 text-[11px] font-bold"><button onClick={() => { setEkspEditing(eksp); setIsEkspedisiOpen(true); }} className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800">Edit</button><button onClick={() => handleDeleteEkspedisi(eksp)} className="px-3 py-1.5 rounded-lg border border-rose-300 text-rose-600 hover:bg-rose-50">Hapus</button></div>}
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2"><div><div className="flex items-center gap-2"><span className="font-mono text-xs font-bold text-blue-700">{eksp.nomorSurat || 'Tanpa nomor'}</span><span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 font-bold uppercase">{eksp.status}</span></div><h3 className="font-bold text-sm text-slate-900 dark:text-white mt-1">{eksp.perihal || 'Ekspedisi surat'}</h3><p className="text-[11px] text-slate-500">Tanggal antar: {formatDisplayDate(eksp.tanggalPengiriman)} • Petugas: {eksp.petugasNama || '-'}</p></div><div className="text-right"><p className="text-xl font-black text-blue-600">{done}/{(eksp.recipients || []).length}</p><p className="text-[10px] text-slate-500">sudah diterima</p></div></div>
                       {(eksp.suratAttachments || []).length > 0 ? <div className="flex flex-wrap gap-2">{eksp.suratAttachments.map((attachment, attIdx) => <button key={attachment.id || attIdx} onClick={() => setViewingDocument({ attachment, title: eksp.perihal || eksp.nomorSurat, subtitle: 'Lampiran surat ekspedisi' })} className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 text-[10px] font-bold hover:bg-blue-100"><Icon name="paperclip" className="w-3.5 h-3.5" />Baca {attachment.name || 'Lampiran'}</button>)}</div> : <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300 text-[10px] font-semibold"><Icon name="ban" className="w-3.5 h-3.5" />Tidak ada lampiran surat</span>}
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2">{shownRecipients.map((r) => <div key={r.id} className="p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 flex items-center justify-between gap-3"><div className="min-w-0"><p className="font-bold text-xs text-slate-800 dark:text-slate-100 truncate">{r.namaInstansi}</p><p className="text-[10px] text-slate-500 truncate">{r.alamat || 'Alamat belum diisi'}</p><p className="text-[10px] text-slate-400">{r.status === 'diterima' ? `Diterima ${r.namaPenerima || ''} • ${r.deliveredAt}` : r.status.replaceAll('_', ' ')}</p></div>{normalizeRole(currentUser?.role) === 'petugas_ekspedisi' && r.status !== 'diterima' && <button onClick={() => setActiveEkspedisiRecipient(r)} className="shrink-0 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold">Catat Terima</button>}{r.status === 'diterima' && <button onClick={() => setPrintEkspedisiReceipt({ eksp, recipient: r })} className="shrink-0 px-2.5 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-800 text-white text-[10px] font-bold">Lihat Bukti</button>}</div>)}</div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">{shownRecipients.map((r) => { const phone=String(r.nomorTelepon||'').replace(/\D/g,'').replace(/^0/,'62'); const mapUrl=`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(r.alamat||r.namaInstansi||'')}`; const waUrl=`https://wa.me/${phone}?text=${encodeURIComponent(`Halo, saya kurir dari DP3APPKB. Saya akan mengantar surat ${eksp.nomorSurat||''} ke ${r.namaInstansi}.`)}`; const st=r.status==='belum_diantar'?'ditugaskan':(r.status||'ditugaskan'); const final=['diterima','tidak_ditemui','ditolak','dijadwalkan_ulang'].includes(st); return <div key={r.id} className="p-4 rounded-2xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 space-y-3"><div><p className="font-extrabold text-sm text-slate-900 dark:text-white">{r.namaInstansi}</p><p className="text-xs text-slate-600 dark:text-slate-300 mt-1">{r.alamat || 'Alamat belum diisi'}</p><p className="mt-2 inline-flex rounded-full px-3 py-1 bg-white dark:bg-slate-900 text-xs font-bold">{st.replaceAll('_',' ')}{st==='diterima' && r.deliveredAt ? ` • ${r.deliveredAt}`:''}</p>{r.failureReason && <p className="text-xs text-rose-700 dark:text-rose-300 mt-1">Alasan: {r.failureReason}</p>}</div><div className="grid grid-cols-2 sm:grid-cols-4 gap-2">{phone && <a href={`tel:${phone}`} className="min-h-11 flex items-center justify-center rounded-xl bg-blue-600 text-white font-bold text-xs">Telepon</a>}{phone && <a href={waUrl} target="_blank" rel="noopener noreferrer" className="min-h-11 flex items-center justify-center rounded-xl bg-emerald-600 text-white font-bold text-xs">WhatsApp</a>}<a href={mapUrl} target="_blank" rel="noopener noreferrer" className="min-h-11 flex items-center justify-center rounded-xl bg-slate-800 text-white font-bold text-xs">Navigasi</a>{!final && st==='ditugaskan' && <button onClick={() => handleUpdateEkspedisiTahap(r,'dalam_perjalanan')} className="min-h-11 rounded-xl bg-amber-400 text-slate-950 font-extrabold text-xs">Mulai perjalanan</button>}{!final && st==='dalam_perjalanan' && <button onClick={() => handleUpdateEkspedisiTahap(r,'tiba')} className="min-h-11 rounded-xl bg-amber-400 text-slate-950 font-extrabold text-xs">Tiba</button>}{!final && st==='tiba' && <button onClick={() => openDeliveryForm(r)} className="min-h-11 rounded-xl bg-emerald-700 text-white font-extrabold text-xs">Catat hasil</button>}{st==='diterima' && <button onClick={() => setPrintEkspedisiReceipt({ eksp, recipient: r })} className="min-h-11 rounded-xl bg-slate-700 text-white font-bold text-xs">Lihat bukti</button>}</div></div>; })}</div>
                     </div>;
                   })}
                 </div>
@@ -6910,6 +7060,9 @@
                 )
               )}
             </main>
+            {normalizeRole(currentUser?.role, currentUser) === 'petugas_ekspedisi' && <nav aria-label="Navigasi kurir" className="lg:hidden fixed bottom-0 inset-x-0 z-[70] grid grid-cols-3 bg-white/95 dark:bg-slate-950/95 backdrop-blur border-t border-slate-200 dark:border-slate-700 shadow-[0_-4px_20px_rgba(0,0,0,.12)] pb-[env(safe-area-inset-bottom)]">
+              {[{id:'dashboard',label:'Tugas',icon:'send'},{id:'ekspedisi',label:'Riwayat',icon:'book'},{id:'kinerja',label:'Kinerja',icon:'printer'}].map((item) => <button key={item.id} onClick={() => { if(item.id==='ekspedisi'){setEkspedisiStatusFilter('semua');setEkspedisiPeriodFilter('all');} setActiveTab(item.id); }} className={`min-h-14 flex flex-col items-center justify-center gap-1 text-xs font-bold ${activeTab===item.id?'text-emerald-700 dark:text-emerald-300':'text-slate-500 dark:text-slate-400'}`}><Icon name={item.icon} className="w-5 h-5" />{item.label}{item.id==='dashboard' && pendingDeliverySyncCount>0 ? <span className="absolute top-1 right-1/3 rounded-full bg-amber-500 text-white px-1.5 text-[9px]">{pendingDeliverySyncCount}</span>:null}</button>)}
+            </nav>}
           </div>
 
           {/* MODAL 1: AMBIL NOMOR SURAT KELUAR MANDIRI */}
@@ -7296,11 +7449,11 @@
           {printEkspedisiReceipt && (
             <div className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-6 bg-slate-950/75 backdrop-blur-xs overflow-y-auto">
               <div className="w-full max-w-3xl my-4 bg-white rounded-2xl shadow-2xl overflow-hidden">
-                <div className="no-print px-5 py-3 bg-slate-900 text-white flex items-center justify-between"><div><h3 className="font-bold text-sm">Bukti Penerimaan Surat</h3><p className="text-[10px] text-slate-400">Dokumen konfirmasi penerimaan ekspedisi</p></div><div className="flex items-center gap-2"><button onClick={handlePrintReceipt} className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-bold">Cetak Bukti</button><button onClick={() => setPrintEkspedisiReceipt(null)} className="p-1.5 rounded-lg hover:bg-white/10"><Icon name="x" className="w-5 h-5" /></button></div></div>
+                <div className="no-print px-5 py-3 bg-slate-900 text-white flex items-center justify-between"><div><h3 className="font-bold text-sm">Hasil Pengantaran Surat</h3><p className="text-[10px] text-slate-400">Dokumen konfirmasi penerimaan ekspedisi</p></div><div className="flex items-center gap-2"><button onClick={handlePrintReceipt} className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-xs font-bold">Cetak Bukti</button><button onClick={() => setPrintEkspedisiReceipt(null)} className="p-1.5 rounded-lg hover:bg-white/10"><Icon name="x" className="w-5 h-5" /></button></div></div>
                 <div className="printable-content receipt-paper p-6 sm:p-10 bg-white text-black font-sans text-xs">
                   <div className="flex items-center gap-4 border-b-2 border-black pb-3 mb-5"><LogoKopDinas logoUrl={customLogoUrl} className="w-16 h-16" /><div className="flex-1 text-center"><p className="font-semibold uppercase tracking-wide">{settings.subTitle}</p><h2 className="font-black text-base uppercase">{settings.agencyName}</h2><p className="text-[10px] mt-1">{settings.address} • Telp: {settings.phone}</p></div></div>
                   <div className="text-center mb-5"><h1 className="font-black text-base uppercase underline">BUKTI PENERIMAAN SURAT</h1><p className="font-mono text-[10px] mt-1">ID BUKTI: BKT-{String(printEkspedisiReceipt.eksp.id || '').replace(/^eksp-/, '')}{String(printEkspedisiReceipt.recipient.id || '').startsWith(String(printEkspedisiReceipt.eksp.id || '')) ? String(printEkspedisiReceipt.recipient.id).slice(String(printEkspedisiReceipt.eksp.id).length) : `-${printEkspedisiReceipt.recipient.id}`}</p></div>
-                  <table className="w-full border-collapse border border-black mb-5"><tbody><tr><td className="border border-black p-2 w-1/3 font-bold">Nomor Surat</td><td className="border border-black p-2">{printEkspedisiReceipt.eksp.nomorSurat || '-'}</td></tr><tr><td className="border border-black p-2 font-bold">Perihal</td><td className="border border-black p-2">{printEkspedisiReceipt.eksp.perihal || '-'}</td></tr><tr><td className="border border-black p-2 font-bold">Instansi Tujuan</td><td className="border border-black p-2">{printEkspedisiReceipt.recipient.namaInstansi || '-'}</td></tr><tr><td className="border border-black p-2 font-bold">Alamat</td><td className="border border-black p-2">{printEkspedisiReceipt.recipient.alamat || '-'}</td></tr><tr><td className="border border-black p-2 font-bold">Diterima Oleh</td><td className="border border-black p-2">{printEkspedisiReceipt.recipient.namaPenerima || '-'}{printEkspedisiReceipt.recipient.jabatanPenerima ? ` — ${printEkspedisiReceipt.recipient.jabatanPenerima}` : ''}</td></tr><tr><td className="border border-black p-2 font-bold">Tanggal & Jam</td><td className="border border-black p-2">{printEkspedisiReceipt.recipient.deliveredAt || '-'}</td></tr><tr><td className="border border-black p-2 font-bold">Petugas Pengantar</td><td className="border border-black p-2">{printEkspedisiReceipt.eksp.petugasNama || '-'}</td></tr></tbody></table>
+                  <table className="w-full border-collapse border border-black mb-5"><tbody><tr><td className="border border-black p-2 w-1/3 font-bold">Nomor Surat</td><td className="border border-black p-2">{printEkspedisiReceipt.eksp.nomorSurat || '-'}</td></tr><tr><td className="border border-black p-2 font-bold">Perihal</td><td className="border border-black p-2">{printEkspedisiReceipt.eksp.perihal || '-'}</td></tr><tr><td className="border border-black p-2 font-bold">Instansi Tujuan</td><td className="border border-black p-2">{printEkspedisiReceipt.recipient.namaInstansi || '-'}</td></tr><tr><td className="border border-black p-2 font-bold">Alamat</td><td className="border border-black p-2">{printEkspedisiReceipt.recipient.alamat || '-'}</td></tr><tr><td className="border border-black p-2 font-bold">Diterima Oleh</td><td className="border border-black p-2">{printEkspedisiReceipt.recipient.namaPenerima || '-'}{printEkspedisiReceipt.recipient.jabatanPenerima ? ` — ${printEkspedisiReceipt.recipient.jabatanPenerima}` : ''}</td></tr><tr><td className="border border-black p-2 font-bold">Tanggal & Jam</td><td className="border border-black p-2">{printEkspedisiReceipt.recipient.deliveredAt || printEkspedisiReceipt.recipient.updatedAt || '-'}</td></tr>{printEkspedisiReceipt.recipient.locationLat && <tr><td className="border border-black p-2 font-bold">Lokasi bukti</td><td className="border border-black p-2">{printEkspedisiReceipt.recipient.locationLat}, {printEkspedisiReceipt.recipient.locationLng} (±{printEkspedisiReceipt.recipient.locationAccuracy || '?'} m)</td></tr>}<tr><td className="border border-black p-2 font-bold">Petugas Pengantar</td><td className="border border-black p-2">{printEkspedisiReceipt.eksp.petugasNama || '-'}</td></tr></tbody></table>
                   <p className="mb-5 leading-relaxed">Dengan ini dinyatakan bahwa surat tersebut telah diterima oleh pihak yang tercantum di atas. Dokumen ini merupakan bukti administrasi penerimaan surat dan dibuat berdasarkan pencatatan pada aplikasi Si-Nomer & E-Surat.</p>
                   <div className="grid grid-cols-2 gap-8 items-end"><div><p className="font-bold mb-2">Foto Bukti</p>{printEkspedisiReceipt.recipient.photoData ? <img src={printEkspedisiReceipt.recipient.photoData} alt="Foto bukti penerimaan" className="w-full max-h-48 object-contain border border-black" /> : <div className="h-32 border border-black flex items-center justify-center text-slate-500">Tidak ada foto</div>}</div><div className="text-center"><p className="font-bold mb-2">Tanda Tangan Penerima</p>{printEkspedisiReceipt.recipient.signatureData ? <img src={printEkspedisiReceipt.recipient.signatureData} alt="Tanda tangan penerima" className="w-full h-32 object-contain border-b border-black" /> : <div className="h-32 border-b border-black" />}<p className="mt-2 font-semibold">{printEkspedisiReceipt.recipient.namaPenerima || '.................................'}</p><p>{printEkspedisiReceipt.recipient.jabatanPenerima || 'Penerima'}</p></div></div>
                   <div className="mt-8 pt-3 border-t border-slate-400 flex justify-between text-[10px]"><span>Dicetak dari Si-Nomer & E-Surat</span><span>Ekspedisi: {printEkspedisiReceipt.eksp.id}</span></div>
@@ -7328,8 +7481,8 @@
           {/* MODAL BUKTI PENERIMAAN */}
           {activeEkspedisiRecipient && (
             <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-              <div className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200 dark:border-slate-700"><div className="px-6 py-4 bg-emerald-600 text-white flex items-center justify-between"><div><h3 className="font-bold text-sm">Bukti Penerimaan Surat</h3><p className="text-[11px] text-emerald-100">{activeEkspedisiRecipient.namaInstansi}</p></div><button onClick={()=>setActiveEkspedisiRecipient(null)}><Icon name="x" className="w-5 h-5" /></button></div>
-                <form onSubmit={(e)=>{e.preventDefault(); const f=e.target; const send=(photoData)=>handleUpdateEkspedisiRecipient({recipientId:activeEkspedisiRecipient.id,namaPenerima:f.namaPenerima.value,jabatanPenerima:f.jabatanPenerima.value,status:f.status.value,catatan:f.catatan.value,signatureData:signatureCanvasRef.current ? signatureCanvasRef.current.toDataURL('image/png') : '',photoData:photoData||''}); const file=f.photo.files[0]; if(file){const reader=new FileReader();reader.onload=()=>send(reader.result);reader.readAsDataURL(file);}else send('');}} className="p-6 space-y-3 text-xs"><div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800"><p className="font-bold">{activeEkspedisiRecipient.namaInstansi}</p><p className="text-slate-500">{activeEkspedisiRecipient.alamat||'Alamat belum diisi'}</p></div><div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><div><label className="block font-semibold mb-1">Nama Penerima</label><input name="namaPenerima" required className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" /></div><div><label className="block font-semibold mb-1">Jabatan</label><input name="jabatanPenerima" className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" /></div></div><div><label className="block font-semibold mb-1">Status</label><select name="status" className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"><option value="diterima">Berhasil Diterima</option><option value="tidak_ditemui">Tidak Ditemui</option><option value="ditolak">Ditolak</option><option value="dijadwalkan_ulang">Dijadwalkan Ulang</option></select></div><div><label className="block font-semibold mb-1">Tanda Tangan Penerima</label><canvas ref={signatureCanvasRef} width="520" height="150" className="w-full h-28 border border-slate-300 dark:border-slate-600 rounded-xl bg-white touch-none" onPointerDown={(e)=>{const c=signatureCanvasRef.current; const ctx=c.getContext('2d'); ctx.beginPath(); ctx.moveTo(e.nativeEvent.offsetX,e.nativeEvent.offsetY); c.setPointerCapture(e.pointerId);}} onPointerMove={(e)=>{if(e.currentTarget.hasPointerCapture(e.pointerId)){const c=signatureCanvasRef.current; const ctx=c.getContext('2d'); ctx.lineWidth=2; ctx.lineCap='round'; ctx.lineTo(e.nativeEvent.offsetX,e.nativeEvent.offsetY); ctx.stroke();}}} /></div><div><label className="block font-semibold mb-1">Foto Bukti (opsional)</label><input type="file" name="photo" accept="image/*" capture="environment" className="w-full p-2 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" /></div><div><label className="block font-semibold mb-1">Catatan</label><textarea name="catatan" rows="2" className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"></textarea></div><div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-700"><button type="button" onClick={()=>setActiveEkspedisiRecipient(null)} className="px-4 py-2 rounded-xl">Batal</button><button type="submit" className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold">Simpan Bukti</button></div></form></div>
+              <div className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200 dark:border-slate-700"><div className="px-6 py-4 bg-emerald-600 text-white flex items-center justify-between"><div><h3 className="font-bold text-sm">Hasil Pengantaran Surat</h3><p className="text-[11px] text-emerald-100">{activeEkspedisiRecipient.namaInstansi}</p></div><button onClick={()=>setActiveEkspedisiRecipient(null)}><Icon name="x" className="w-5 h-5" /></button></div>
+                <form onSubmit={async (e)=>{e.preventDefault(); const f=e.currentTarget; const status=f.status.value; const failed=status!=='diterima'; if(status==='diterima'&&!f.namaPenerima.value.trim()){showToast('Nama penerima wajib','Isi nama penerima untuk serah-terima berhasil.','alert');return;} if(failed&&!f.failureReason.value){showToast('Pilih alasan','Pilih alasan kegagalan terlebih dahulu.','alert');return;} if(f.failureReason.value==='Lainnya'&&!f.catatan.value.trim()){showToast('Catatan wajib','Jelaskan alasan Lainnya pada catatan.','alert');return;} const loc=await getOptionalCourierLocation(f.shareLocation.checked); const stamp=new Date().toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'short'}); try { const photo=await compressCourierPhoto(f.photo.files[0],stamp,loc); const canvas=signatureCanvasRef.current; handleUpdateEkspedisiRecipient({recipientId:activeEkspedisiRecipient.id,namaPenerima:f.namaPenerima.value,jabatanPenerima:f.jabatanPenerima.value,status,catatan:f.catatan.value,failureReason:failed?f.failureReason.value:'',signatureData:canvas&&!canvas.dataset.empty?canvas.toDataURL('image/png'):'',photoData:photo,location:loc}); } catch(err) { showToast('Bukti belum dapat diproses',err.message||'Gagal memproses foto.','alert'); } }} className="p-5 sm:p-6 space-y-4 text-sm max-h-[85vh] overflow-y-auto"><div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800"><p className="font-bold">{activeEkspedisiRecipient.namaInstansi}</p><p className="text-slate-500">{activeEkspedisiRecipient.alamat||'Alamat belum diisi'}</p></div><div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><div><label className="block font-semibold mb-1">Nama Penerima</label><input name="namaPenerima" required={deliveryFormStatus==='diterima'} className="w-full min-h-12 p-3 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-base" /></div><div><label className="block font-semibold mb-1">Jabatan</label><input name="jabatanPenerima" className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" /></div></div><div><label className="block font-semibold mb-1">Status</label><select name="status" value={deliveryFormStatus} onChange={(e)=>setDeliveryFormStatus(e.target.value)} className="w-full min-h-12 p-3 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-base"><option value="diterima">Berhasil diterima</option><option value="tidak_ditemui">Tidak ditemui</option><option value="ditolak">Ditolak</option><option value="dijadwalkan_ulang">Jadwalkan ulang</option></select></div>{deliveryFormStatus!=='diterima' && <div><label className="block font-semibold mb-1">Alasan gagal</label><select name="failureReason" defaultValue="" className="w-full min-h-12 p-3 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-base"><option value="">Pilih alasan</option><option>Penerima tidak ditemui</option><option>Penerima menolak</option><option>Alamat tidak ditemukan</option><option>Lokasi tutup</option><option>Diminta jadwalkan ulang</option><option>Lainnya</option></select></div>}<div><label className="block font-semibold mb-1">Tanda Tangan Penerima</label><canvas ref={signatureCanvasRef} width="520" height="150" data-empty="true" className="w-full h-32 border border-slate-300 dark:border-slate-600 rounded-xl bg-white touch-none" onPointerDown={(e)=>{const c=signatureCanvasRef.current; const ctx=c.getContext('2d'); const r=c.getBoundingClientRect(); const x=(e.clientX-r.left)*c.width/r.width; const y=(e.clientY-r.top)*c.height/r.height; ctx.beginPath(); ctx.moveTo(x,y); c.dataset.empty='false'; c.setPointerCapture(e.pointerId);}} onPointerMove={(e)=>{if(e.currentTarget.hasPointerCapture(e.pointerId)){const c=signatureCanvasRef.current; const ctx=c.getContext('2d'); const r=c.getBoundingClientRect(); const x=(e.clientX-r.left)*c.width/r.width; const y=(e.clientY-r.top)*c.height/r.height; ctx.lineWidth=3; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle='#111827'; ctx.lineTo(x,y); ctx.stroke();}}} /><button type="button" onClick={()=>{const c=signatureCanvasRef.current;c.getContext('2d').clearRect(0,0,c.width,c.height);c.dataset.empty='true';}} className="mt-2 px-4 py-2 rounded-lg border font-bold">Hapus tanda tangan</button></div><div><label className="block font-semibold mb-1">Foto bukti (opsional, otomatis dikompres)</label><input type="file" name="photo" accept="image/*" capture="environment" className="w-full min-h-12 p-3 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" /><p className="text-xs text-slate-500 mt-1">Foto diberi cap waktu. Ukuran dibatasi agar dapat disimpan di spreadsheet.</p></div><label className="flex items-start gap-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/30"><input type="checkbox" name="shareLocation" className="mt-1 w-5 h-5" /><span><strong>Sertakan lokasi saat ini (opsional)</strong><span className="block text-xs text-slate-600 dark:text-slate-300 mt-1">Browser akan meminta izin lokasi. Jika ditolak/tidak tersedia, bukti tetap dapat disimpan tanpa lokasi.</span></span></label><div><label className="block font-semibold mb-1">Catatan</label><textarea name="catatan" rows="2" className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"></textarea></div><div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-700"><button type="button" onClick={()=>setActiveEkspedisiRecipient(null)} className="px-4 py-2 rounded-xl">Batal</button><button type="submit" className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold">Simpan Bukti</button></div></form></div>
             </div>
           )}
 
