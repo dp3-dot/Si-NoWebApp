@@ -543,6 +543,17 @@
       const sameDept = normalizeDeptId(sk?.departmentId) === normalizeDeptId(user?.departmentId, user);
       return sameDept && ['', 'tercatat', 'draft_diunggah', 'perlu_perbaikan'].includes(String(sk?.status || ''));
     }
+    // Label & warna lencana role: satu sumber agar tampil sama di semua layar.
+    const ROLE_INFO = {
+      admin: { label: 'Administrator TU', short: 'Admin TU', icon: '🛡️', cls: 'bg-emerald-100 text-emerald-800' },
+      pimpinan: { label: 'Pimpinan (Kepala Dinas)', short: 'Kepala Dinas', icon: '👑', cls: 'bg-amber-100 text-amber-800' },
+      operator_tu: { label: 'Operator TU (Staf Sekretariat)', short: 'Operator TU', icon: '🗂️', cls: 'bg-teal-100 text-teal-800' },
+      operator_bidang: { label: 'Operator Bidang', short: 'Operator Bidang', icon: '🧑‍💻', cls: 'bg-sky-100 text-sky-800' },
+      penelaah_teknis: { label: 'Penelaah Teknis Kebijakan', short: 'Penelaah', icon: '🔍', cls: 'bg-violet-100 text-violet-800' },
+      petugas_ekspedisi: { label: 'Petugas Ekspedisi (Kurir)', short: 'Kurir', icon: '🚚', cls: 'bg-orange-100 text-orange-800' },
+      user: { label: 'Kepala Bidang', short: 'Kepala Bidang', icon: '👤', cls: 'bg-blue-100 text-blue-800' },
+    };
+    function roleInfo(role, user) { return ROLE_INFO[normalizeRole(role, user)] || ROLE_INFO.user; }
     function canManageSuratMasuk(user) {
       const r = normalizeRole(user?.role, user);
       return r === 'admin' || r === 'operator_tu';
@@ -4176,7 +4187,7 @@
                     </div>
                     <div className="hidden sm:block text-left text-xs">
                       <p className="font-bold text-slate-900 truncate max-w-[140px]">{currentUser.name.split(',')[0]}</p>
-                      <p className="text-[10px] text-slate-500 truncate max-w-[140px]">{currentUser.departmentName}</p>
+                      <p className="text-[10px] text-slate-500 truncate max-w-[140px]">{roleInfo(currentUser.role, currentUser).short} • {currentUser.departmentName}</p>
                     </div>
                     <Icon name="chevronDown" className="w-3.5 h-3.5 text-slate-400" />
                   </button>
@@ -4186,19 +4197,7 @@
                       <div className="px-4 py-2 border-b border-slate-100">
                         <p className="text-xs font-bold text-slate-900">{currentUser.name}</p>
                         <p className="text-[10px] text-slate-500">{currentUser.departmentName}</p>
-                        <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[9px] font-bold ${
-                          normalizeRole(currentUser.role) === 'admin'
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : normalizeRole(currentUser.role) === 'pimpinan'
-                            ? 'bg-amber-100 text-amber-800'
-                            : 'bg-blue-100 text-blue-800'
-                        }`}>
-                          {normalizeRole(currentUser.role) === 'admin'
-                            ? '🛡️ Administrator TU'
-                            : normalizeRole(currentUser.role) === 'pimpinan'
-                            ? '👑 Pimpinan Kadis'
-                            : `👤 Pengguna: ${currentUser.departmentName}`}
-                        </span>
+                        <span className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[9px] font-bold ${roleInfo(currentUser.role, currentUser).cls}`}>{roleInfo(currentUser.role, currentUser).icon} {roleInfo(currentUser.role, currentUser).label}</span>
                       </div>
 
                       {/* Detail Identitas User Resmi */}
@@ -4408,15 +4407,7 @@
                       {currentUser.name}
                     </p>
                     <span className="inline-block mt-0.5 text-[10px] px-2 py-0.5 rounded font-bold uppercase bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300">
-                      {normalizeRole(currentUser.role) === 'petugas_ekspedisi'
-                        ? 'Petugas Ekspedisi'
-                        : normalizeRole(currentUser.role) === 'admin'
-                        ? 'Admin Sekretariat'
-                        : normalizeRole(currentUser.role) === 'pimpinan'
-                        ? 'Pimpinan Kadis'
-                        : normalizeRole(currentUser.role) === 'penelaah_teknis'
-                        ? 'Penelaah Teknis'
-                        : 'Staf / User Bidang'}
+                      {roleInfo(currentUser.role, currentUser).icon} {roleInfo(currentUser.role, currentUser).label}
                     </span>
                   </div>
                   <button type="button" onClick={handleLogout} className="w-full mt-1 flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-rose-50 text-rose-700 border border-rose-200 text-xs font-bold hover:bg-rose-100">
@@ -6049,27 +6040,7 @@
                                       <td className="p-3.5 font-mono font-bold text-indigo-600">@{u.username}</td>
                                       <td className="p-3.5 text-slate-700">{u.departmentName}</td>
                                       <td className="p-3.5">
-                                        {u.role === 'admin' ? (
-                                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-800">
-                                            Admin TU
-                                          </span>
-                                        ) : u.role === 'pimpinan' ? (
-                                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
-                                            Kepala Dinas
-                                          </span>
-                                        ) : u.role === 'operator_tu' ? (
-                                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-100 text-teal-800">
-                                            Operator TU
-                                          </span>
-                                        ) : u.role === 'operator_bidang' ? (
-                                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800">
-                                            Operator Bidang
-                                          </span>
-                                        ) : (
-                                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800">
-                                            Kepala Bidang
-                                          </span>
-                                        )}
+                                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${roleInfo(u.role).cls}`}>{roleInfo(u.role).icon} {roleInfo(u.role).short}</span>
                                       </td>
                                       <td className="p-3.5 text-center">
                                         {isActive ? (
@@ -9168,8 +9139,8 @@
                       departmentId: deptObj.id,
                       departmentName: deptObj.name,
                       position: f.position.value,
-                      password: f.password.value || editingUser.password || 'password123',
-                      pin: f.pin.value || editingUser.pin || '123456',
+                      password: f.password.value || '',
+                      pin: f.pin.value || '',
                     });
                   }}
                   className="p-6 space-y-4 text-xs"
@@ -9207,11 +9178,11 @@
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label className="block font-semibold mb-1">Kata Sandi</label>
-                      <input type="text" name="password" defaultValue={editingUser.password || 'password123'} className="w-full p-2.5 rounded-xl border border-slate-300 font-mono" />
+                      <input type="text" name="password" defaultValue="" placeholder="Kosongkan jika tidak diubah" className="w-full p-2.5 rounded-xl border border-slate-300 font-mono" />
                     </div>
                     <div>
                       <label className="block font-semibold mb-1">PIN Cepat</label>
-                      <input type="text" name="pin" defaultValue={editingUser.pin || '123456'} maxLength="6" className="w-full p-2.5 rounded-xl border border-slate-300 font-mono" />
+                      <input type="text" name="pin" defaultValue="" placeholder="Kosongkan jika tidak diubah" maxLength="6" className="w-full p-2.5 rounded-xl border border-slate-300 font-mono" />
                     </div>
                   </div>
 
