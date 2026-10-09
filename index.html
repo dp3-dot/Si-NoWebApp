@@ -243,12 +243,13 @@
   /* Teks panjang (nomor surat, email, URL) tidak boleh mendorong kartu melebar */
   main { overflow-wrap: break-word; }
   /* Anak flex/grid boleh mengecil; tanpa ini isinya meluber keluar dari kartu */
-  main .flex > :not(svg):not(img):not(button):not(.shrink-0),
-  main .grid > * { min-width: 0; }
   main input, main select, main textarea { max-width: 100%; }
   /* Bidang bawah halaman agar tombol melayang tidak menutup konten terakhir */
   main { padding-bottom: 5rem !important; }
   @media (max-width: 1023px) {
+    /* Anak flex/grid boleh mengecil di layar kecil agar isi tidak meluber (di PC dibiarkan normal) */
+    main .flex > :not(svg):not(img):not(button):not(.shrink-0),
+    main .grid > * { min-width: 0; }
     /* Tabel di luar pembungkus gulir: gulir sendiri, jangan terpotong */
     :not(.overflow-x-auto):not(.mobile-register-scroll) > table { display: block; max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
     main pre, main code { white-space: pre-wrap; word-break: break-word; }
@@ -266,10 +267,13 @@
   html.dark, html.dark body { background: #020617; }
   #root { width: 100%; min-height: 100vh; min-height: 100dvh; }
   /* Kartu dan isinya tidak boleh lebih lebar daripada induknya */
-  main, main > * { min-width: 0; max-width: 100%; }
-  main [class*="rounded-3xl"], main [class*="rounded-2xl"], main [class*="rounded-xl"] { min-width: 0; max-width: 100%; }
-  main [class*="rounded-3xl"] > *, main [class*="rounded-2xl"] > * { min-width: 0; max-width: 100%; }
-  main h1, main h2, main h3, main p, main span, main label, main a { overflow-wrap: anywhere; }
+  @media (max-width: 1023px) {
+    main, main > * { min-width: 0; max-width: 100%; }
+    main [class*="rounded-3xl"], main [class*="rounded-2xl"], main [class*="rounded-xl"] { min-width: 0; max-width: 100%; }
+    main [class*="rounded-3xl"] > *, main [class*="rounded-2xl"] > * { min-width: 0; max-width: 100%; }
+  }
+  /* break-word hanya memecah kata yang benar-benar tidak muat; 'anywhere' membuat kolom bisa menyusut jadi 1 huruf per baris */
+  main h1, main h2, main h3, main p, main span, main label, main a { overflow-wrap: break-word; }
   main .truncate { max-width: 100%; }
   .min-h-screen { min-height: 100vh !important; min-height: 100dvh !important; }
 </style>
@@ -3725,7 +3729,16 @@
         const ownedItems = items.filter((item) => !item.userId || item.userId === String(currentUser?.id || ''));
         for (const item of ownedItems) {
           try { const result = await callGAS(item.api, item.data); if (!result || result.success === false) throw new Error(result?.error || 'Server menolak satu perubahan offline.'); await deleteCourierQueueItem(item.id); }
-          catch (err) { if (!isCourierNetworkFailure(err)) showToast('Antrean perlu ditinjau', err.message || 'Satu item belum dapat dikirim.', 'alert'); break; }
+          catch (err) {
+            if (isCourierNetworkFailure(err)) break; // jaringan belum pulih: coba lagi nanti
+            if (/sesi|login kembali|tidak aktif/i.test(String(err && err.message || err))) {
+              showToast('Login ulang diperlukan', 'Masuk kembali agar bukti offline dapat dikirim.', 'alert');
+              break; // sesi habis: simpan antrean, kirim setelah login
+            }
+            // Ditolak server (misalnya status sudah berubah): buang item ini agar tidak menghalangi item lain
+            showToast('Satu perubahan offline ditolak', err.message || 'Server menolak satu perubahan.', 'alert');
+            try { await deleteCourierQueueItem(item.id); } catch (e2) { break; }
+          }
         }
         try { const rest = await getCourierQueueItems(); setPendingDeliverySyncCount(rest.length); if (!rest.length && items.length) { showToast('Sinkronisasi selesai', 'Semua bukti offline berhasil dikirim.', 'success'); loadDataFromSheets(currentUser); } }
         catch (err) { console.warn(err); }
@@ -3736,11 +3749,15 @@
         const flush = () => { if (navigator.onLine) flushCourierOutbox(); };
         getCourierQueueItems().then((items) => setPendingDeliverySyncCount(items.length)).catch(() => {});
         window.addEventListener('online', flush); flush();
-        return () => window.removeEventListener('online', flush);
+        const retryTimer = setInterval(() => { if (!document.hidden) flush(); }, 45000);
+        return () => { window.removeEventListener('online', flush); clearInterval(retryTimer); };
       }, [currentUser?.id]);
       const dailyCourierSummary = () => {
         const today = jakartaDateKey();
-        const stops = (ekspedisiList || []).filter((e) => String(e.tanggalPengiriman || '').slice(0,10) === today).flatMap((e) => e.recipients || []);
+        const stops = (ekspedisiList || []).flatMap((e) => {
+          const d = String(e.tanggalPengiriman || '').slice(0, 10);
+          return (e.recipients || []).filter((r) => d === today || (d && d < today && !['diterima','tidak_ditemui','ditolak','dijadwalkan_ulang'].includes(r.status)));
+        });
         const done = stops.filter((r) => r.status === 'diterima').length;
         const lines = stops.map((r) => `• ${r.namaInstansi}: ${String(r.status || 'ditugaskan').replaceAll('_',' ')}${r.failureReason ? ' — ' + r.failureReason : ''}`);
         return `Laporan kurir ${currentUser?.name || ''} • ${today}\nProgres: ${done} dari ${stops.length} terantar\n${lines.join('\n')}`;
@@ -4109,7 +4126,7 @@
         if (role === 'petugas_ekspedisi') {
           return [
             { id: 'dashboard', label: 'Dashboard Petugas', icon: 'building' },
-            { id: 'ekspedisi', label: 'Tugas Ekspedisi', icon: 'send', badge: ekspedisiList.filter((e) => !(e.recipients || []).length || !(e.recipients || []).some((r) => ['diterima','tidak_ditemui','ditolak','dijadwalkan_ulang'].includes(r.status))).length || null },
+            { id: 'ekspedisi', label: 'Tugas Ekspedisi', icon: 'send', badge: ekspedisiList.filter((e) => !(e.recipients || []).length || !(e.recipients || []).every((r) => ['diterima','tidak_ditemui','ditolak','dijadwalkan_ulang'].includes(r.status))).length || null },
             { id: 'kinerja', label: 'Laporan Kinerja', icon: 'printer' },
           ];
         }
@@ -4757,8 +4774,13 @@
                 const isSuper = normalizeRole(currentUser?.role, currentUser) === 'admin' || normalizeRole(currentUser?.role, currentUser) === 'pimpinan';
                 if (normalizeRole(currentUser?.role, currentUser) === 'petugas_ekspedisi') {
                   const today = jakartaDateKey();
-                  const todaysRuns = (ekspedisiList || []).filter((e) => String(e.tanggalPengiriman || '').slice(0, 10) === today);
-                  const stops = todaysRuns.flatMap((e) => (e.recipients || []).map((r) => ({ ...r, ekspedisi: e })));
+                  // Tugas hari ini + tugas hari sebelumnya yang belum selesai (agar tidak terlewat)
+                  const stops = (ekspedisiList || []).flatMap((e) => {
+                    const d = String(e.tanggalPengiriman || '').slice(0, 10);
+                    return (e.recipients || [])
+                      .filter((r) => d === today || (d && d < today && !['diterima','tidak_ditemui','ditolak','dijadwalkan_ulang'].includes(r.status)))
+                      .map((r) => ({ ...r, ekspedisi: e }));
+                  });
                   const delivered = stops.filter((r) => r.status === 'diterima').length;
                   const terminal = (r) => ['diterima','tidak_ditemui','ditolak','dijadwalkan_ulang'].includes(r.status);
                   const phoneDigits = (value) => { let n = String(value || '').replace(/\D/g, ''); if (n.startsWith('0')) n = '62' + n.slice(1); return n; };
@@ -5233,7 +5255,7 @@
                   <div className="relative overflow-hidden bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-700 rounded-3xl p-6 text-white shadow-xl">
                     <div className="absolute right-0 top-0 w-80 h-80 bg-white/10 rounded-full blur-3xl pointer-events-none" />
                     <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-                      <div className="max-w-xl space-y-2">
+                      <div className="max-w-xl space-y-2 lg:flex-1 lg:min-w-[20rem]">
                         <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-bold bg-white/20 backdrop-blur-xs text-white">
                           <Icon name="sparkles" className="w-3.5 h-3.5" />
                           <span>
@@ -5257,7 +5279,7 @@
                       </div>
 
                       {/* Card Pratinjau Nomor Yang Akan Didapat */}
-                      <div className="bg-slate-900/90 backdrop-blur-sm border border-emerald-400/40 rounded-2xl p-4 sm:p-5 text-white shadow-2xl shrink-0 flex flex-col justify-between gap-3 min-w-[280px] sm:min-w-[340px]">
+                      <div className="bg-slate-900/90 backdrop-blur-sm border border-emerald-400/40 rounded-2xl p-4 sm:p-5 text-white shadow-2xl shrink-0 lg:shrink lg:max-w-[55%] flex flex-col justify-between gap-3 min-w-[280px] sm:min-w-[340px]">
                         <div>
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-[10px] uppercase font-mono tracking-wider text-emerald-400 font-bold flex items-center gap-1.5">
@@ -5281,6 +5303,7 @@
                                 value={formSkDeptId || 'sekretariat'}
                                 onChange={(e) => setFormSkDeptId(e.target.value)}
                                 className="bg-slate-800 text-emerald-300 font-bold border border-slate-700 rounded-lg px-2 py-0.5 text-xs focus:ring-1 focus:ring-emerald-500 max-w-[130px] truncate"
+                                style={{ maxWidth: 130 }}
                               >
                                 {(activeDepartments)
                                   .filter(d => d.id !== 'pimpinan')
