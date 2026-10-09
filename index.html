@@ -1280,6 +1280,10 @@
       const [openId, setOpenId] = useState(null);
       const [hasil, setHasil] = useState('Disetujui');
       const [catatan, setCatatan] = useState('');
+      const [ringkasan, setRingkasan] = useState('');
+      const [dasar, setDasar] = useState('');
+      const [temuan, setTemuan] = useState('');
+      const [rekomendasi, setRekomendasi] = useState('');
       const [lampiran, setLampiran] = useState('');
 
       // Surat yang sudah punya telaah (aktif maupun selesai) tidak ditawarkan lagi.
@@ -1304,6 +1308,13 @@
       const tabOf = (t) => (t.statusTelaah === 'Menunggu Telaah' || t.statusTelaah === 'Belum Ditelaah') ? 'antrean' : t.statusTelaah === 'Selesai' ? 'selesai' : 'proses';
       const shownList = isPenelaah ? telaahList.filter((t) => tabOf(t) === tab) : telaahList;
       const cetakLembar = (t) => {
+        const labels = { 'RINGKASAN ISI SURAT': 'Ringkasan Isi Surat', 'DASAR / PERTIMBANGAN': 'Dasar / Pertimbangan', 'TEMUAN / KOREKSI': 'Temuan / Koreksi', 'REKOMENDASI': 'Rekomendasi' };
+        const escC = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const parts = String(t.catatanTelaah || '').split(/\n\n(?=(?:RINGKASAN ISI SURAT|DASAR \/ PERTIMBANGAN|TEMUAN \/ KOREKSI|REKOMENDASI):)/);
+        const structured = parts.length > 0 && parts.every((p) => /^(RINGKASAN ISI SURAT|DASAR \/ PERTIMBANGAN|TEMUAN \/ KOREKSI|REKOMENDASI):\n/.test(p));
+        const catatanRows = structured
+          ? parts.map((p) => { const m = p.match(/^([A-Z \/]+):\n([\s\S]*)$/); return `<tr><td>${labels[m[1]] || m[1]}</td><td style="white-space:pre-line">${escC(m[2])}</td></tr>`; }).join('')
+          : `<tr><td>Catatan Telaah</td><td style="white-space:pre-line">${escC(t.catatanTelaah)}</td></tr>`;
         const rw = (() => { try { return JSON.parse(t.riwayat || '[]'); } catch (e) { return []; } })();
         const esc = (s) => String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
         const pen = users.find((u) => u.id === t.penelaahId) || {};
@@ -1326,7 +1337,7 @@
           <tr><td>Nomor Surat/Agenda</td><td>${esc(t.nomorSurat)}</td></tr>
           <tr><td>Perihal</td><td>${esc(t.perihal)}</td></tr>
           <tr><td>Hasil Telaah</td><td><b>${esc(t.hasilTelaah)}</b></td></tr>
-          <tr><td>Catatan Telaah</td><td style="white-space:pre-line">${esc(t.catatanTelaah)}</td></tr>
+          ${catatanRows}
           <tr><td>Tanggal Selesai</td><td>${esc(t.tanggalSelesai)}</td></tr>
         </table>
         ${rw.length ? `<p style="margin:0 0 2mm"><b>Riwayat putaran telaah</b></p><table><tr><th style="width:24%">Waktu</th><th style="width:24%">Oleh</th><th>Keterangan</th></tr>${rw.map((r) => `<tr><td>${esc(r.t)}</td><td>${esc(r.oleh)}</td><td>${esc(r.aksi)}</td></tr>`).join('')}</table>` : ''}
@@ -1409,7 +1420,7 @@
                     {t.hasilTelaah && <div className="font-semibold">{t.hasilTelaah}</div>}
                   </div>
                 </div>
-                {(t.statusTelaah === 'Selesai' || t.statusTelaah === 'Perlu Perbaikan') && <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300">Catatan: {t.catatanTelaah}{t.lampiranTelaah ? <> • <a href={t.lampiranTelaah} target="_blank" rel="noreferrer" className="text-emerald-700 underline">Lampiran</a></> : null}</div>}
+                {(t.statusTelaah === 'Selesai' || t.statusTelaah === 'Perlu Perbaikan') && <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300" style={{ whiteSpace: 'pre-line' }}>Catatan: {t.catatanTelaah}{t.lampiranTelaah ? <> • <a href={t.lampiranTelaah} target="_blank" rel="noreferrer" className="text-emerald-700 underline">Lampiran</a></> : null}</div>}
                 <div className="flex flex-wrap gap-2">
                   {find(t) && <button onClick={() => onOpenLetter(t.jenisSurat === 'Surat Masuk' ? 'masuk' : 'keluar', find(t))} className="px-3 py-1.5 rounded-lg border border-slate-300 font-semibold">Buka Surat</button>}
                   {isPenelaah && !t.penelaahId && <button onClick={() => onTake(t.id)} className="px-3 py-1.5 rounded-lg bg-sky-600 text-white font-semibold">Ambil untuk Ditelaah</button>}
@@ -1422,15 +1433,22 @@
                       <button disabled={revisionCount === 0} onClick={() => onResubmit(t.id)} className="px-3 py-1.5 rounded-lg bg-amber-600 text-white font-semibold disabled:opacity-50">Kirim Ulang Draft</button>
                     </div>
                   )}
-                  {isPenelaah && t.penelaahId && t.statusTelaah === 'Belum Ditelaah' && <button onClick={() => onStart(t.id)} className="px-3 py-1.5 rounded-lg bg-sky-600 text-white font-semibold">Mulai Telaah</button>}
-                  {isPenelaah && t.penelaahId && (t.statusTelaah === 'Sedang Ditelaah' || t.statusTelaah === 'Belum Ditelaah') && <button onClick={() => { setOpenId(openId === t.id ? null : t.id); setCatatan(''); setLampiran(''); setHasil('Disetujui'); }} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold">Isi Hasil Telaah</button>}
+                  {isPenelaah && t.penelaahId && (t.statusTelaah === 'Belum Ditelaah' || t.statusTelaah === 'Menunggu Telaah') && <button onClick={() => onStart(t.id)} className="px-3 py-1.5 rounded-lg bg-sky-600 text-white font-semibold">Mulai Telaah</button>}
+                  {isPenelaah && t.penelaahId && (t.statusTelaah === 'Sedang Ditelaah' || t.statusTelaah === 'Belum Ditelaah' || t.statusTelaah === 'Menunggu Telaah') && <button onClick={() => { setOpenId(openId === t.id ? null : t.id); setCatatan(''); setRingkasan(''); setDasar(''); setTemuan(''); setRekomendasi(''); setLampiran(''); setHasil('Disetujui'); }} className="px-3 py-1.5 rounded-lg bg-emerald-600 text-white font-semibold">Isi Hasil Telaah</button>}
                 </div>
                 {isPenelaah && openId === t.id && (
                   <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800 space-y-2">
                     <select value={hasil} onChange={(e) => setHasil(e.target.value)} className="w-full p-2 rounded-lg border border-slate-300 dark:bg-slate-900"><option value="Disetujui">Setujui</option><option value="Pending">Pending (perlu perbaikan)</option></select>
-                    <textarea value={catatan} onChange={(e) => setCatatan(e.target.value)} rows="3" placeholder="Uraian hasil telaah (wajib)" className="w-full p-2 rounded-lg border border-slate-300 dark:bg-slate-900" />
+                    <label className="block text-[11px] font-semibold">Ringkasan isi surat (wajib)</label>
+                    <textarea value={ringkasan} onChange={(e) => setRingkasan(e.target.value)} rows="2" className="w-full p-2 rounded-lg border border-slate-300 dark:bg-slate-900" />
+                    <label className="block text-[11px] font-semibold">Dasar / pertimbangan (peraturan, kebijakan)</label>
+                    <textarea value={dasar} onChange={(e) => setDasar(e.target.value)} rows="2" className="w-full p-2 rounded-lg border border-slate-300 dark:bg-slate-900" />
+                    <label className="block text-[11px] font-semibold">Temuan / koreksi</label>
+                    <textarea value={temuan} onChange={(e) => setTemuan(e.target.value)} rows="2" placeholder="Kosongkan bila tidak ada" className="w-full p-2 rounded-lg border border-slate-300 dark:bg-slate-900" />
+                    <label className="block text-[11px] font-semibold">Rekomendasi (wajib)</label>
+                    <textarea value={rekomendasi} onChange={(e) => setRekomendasi(e.target.value)} rows="2" className="w-full p-2 rounded-lg border border-slate-300 dark:bg-slate-900" />
                     <input value={lampiran} onChange={(e) => setLampiran(e.target.value)} placeholder="Link dokumen telaah (opsional)" className="w-full p-2 rounded-lg border border-slate-300 dark:bg-slate-900" />
-                    <button onClick={() => { onSave({ telaahId: t.id, hasilTelaah: hasil, catatanTelaah: catatan, lampiranTelaah: lampiran }); setOpenId(null); }} className="px-4 py-2 rounded-lg bg-emerald-600 text-white font-bold">Simpan & Selesaikan</button>
+                    <button disabled={!ringkasan.trim() || !rekomendasi.trim()} onClick={() => { onSave({ telaahId: t.id, hasilTelaah: hasil, ringkasan, dasar, temuan, rekomendasi, lampiranTelaah: lampiran }); setOpenId(null); }} className="px-4 py-2 rounded-lg bg-emerald-600 text-white font-bold disabled:opacity-40">Simpan & Selesaikan</button>
                   </div>
                 )}
               </div>
@@ -3532,7 +3550,22 @@
       }, [currentUser, isDataReady]);
 
       // 1. Eksekusi Ambil Nomor Surat Mandiri (Terkunci Sesuai Bidang jika Role User)
+      // Penelaah aktif (untuk pilihan di popup "Perlu ditelaah?")
+      const penelaahOptions = users.filter((u) => normalizeRole(u.role, u) === 'penelaah_teknis' && u.isActive !== false);
+      const [telaahPrompt, setTelaahPrompt] = useState(null);
+      const [tpChoice, setTpChoice] = useState(null);
+      const [tpPenelaahId, setTpPenelaahId] = useState('');
+
+      // Selalu tanyakan dulu apakah surat perlu ditelaah (bila ada penelaah). Keduanya boleh dijawab.
       const handleAmbilNomorMandiri = (formData) => {
+        if (penelaahOptions.length === 0) { doAmbilNomorMandiri(formData); return; }
+        setTpChoice(null);
+        setTpPenelaahId(penelaahOptions.length === 1 ? penelaahOptions[0].id : '');
+        setTelaahPrompt({ formData });
+      };
+
+      const doAmbilNomorMandiri = (formData) => {
+        setTelaahPrompt(null);
         const curRole = normalizeRole(currentUser?.role, currentUser);
         const curDeptId = normalizeDeptId(currentUser?.departmentId, currentUser);
         const targetDeptId = curRole === 'admin' ? (normalizeDeptId(formData.departmentId) || curDeptId) : curDeptId;
@@ -3555,6 +3588,7 @@
           notes: formData.notes,
           attachments: formData.attachments || [],
           kirimTelaah: formData.kirimTelaah === true,
+          penelaahId: formData.kirimTelaah === true ? (formData.penelaahId || '') : '',
           letterKind: formData.letterKind || 'biasa',
         };
 
@@ -3570,6 +3604,7 @@
               resetSkForm();
               playSound('success');
               showToast('Nomor Surat Berhasil Diambil!', res.data.fullLetterNumber, 'success');
+              if (res.data.telaahPenelaahNama) loadDataFromSheets();
             }
           })
           .catch((err) => {
@@ -5436,6 +5471,10 @@
                                       {reportStatusSK(sk.status)}
                                     </span>
                                   )}
+                                  {sk.status === 'menunggu_telaah' && (() => {
+                                    const tl = (telaahList || []).find((t) => String(t.suratId) === String(sk.id));
+                                    const nm = (tl && tl.penelaahNama) || sk.telaahPenelaahNama; return nm ? <span className="text-[9px] text-slate-500">draf ke {nm}</span> : null;
+                                  })()}
                                   {sk.fullLetterNumber && sk.fullLetterNumber.includes('/SK/') ? (
                                     <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
                                       SK
@@ -7191,7 +7230,6 @@
                       letterDate: formSkDate,
                       notes: formSkNotes,
                       attachments: skAttachments,
-                      kirimTelaah: formSkKirimTelaah && skAttachments.length > 0,
                       letterKind: formSkLetterKind || 'biasa',
                     });
                   }}
@@ -7368,7 +7406,6 @@
                       </div>
                     )}
 
-                    <label className="mt-2 flex items-center gap-2 text-xs font-semibold text-slate-700 dark:text-slate-200"><input type="checkbox" checked={formSkKirimTelaah} onChange={(e) => setFormSkKirimTelaah(e.target.checked)} /> Kirim draft ke Penelaah (ekspedisi dan pengesahan menunggu persetujuan)</label>
 
                     {/* Daftar lampiran multi-halaman */}
                     {skAttachments.length > 0 && (
@@ -8152,6 +8189,49 @@
           )}
 
           {/* MODAL 2: TIKET BUKTI PENGAMBILAN NOMOR RESMI */}
+          {telaahPrompt && (() => {
+            const ya = tpChoice === 'ya';
+            const siap = tpChoice === 'tidak' || (ya && skAttachments.length > 0 && tpPenelaahId);
+            const namaPenelaah = (penelaahOptions.find((u) => String(u.id) === String(tpPenelaahId)) || {}).name || '';
+            return (
+              <div className="fixed inset-0 z-[70] flex items-center justify-center p-3 sm:p-4 bg-slate-950/70 backdrop-blur-xs">
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl shadow-2xl w-full max-w-lg max-h-[92vh] overflow-y-auto">
+                  <div className="p-5 border-b border-slate-200 dark:border-slate-800">
+                    <h3 className="text-base font-black text-slate-900 dark:text-white">Apakah surat ini perlu ditelaah?</h3>
+                    <p className="text-xs text-slate-500 mt-1">Penelaah teknis memeriksa draf sebelum surat dikirim atau disahkan. Pilihan ini opsional, tetapi dianjurkan.</p>
+                  </div>
+                  <div className="p-5 space-y-4 text-xs">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <button type="button" onClick={() => setTpChoice('ya')} className={`p-4 rounded-2xl border-2 text-left font-bold ${ya ? 'bg-emerald-600 border-emerald-600 text-white' : 'border-emerald-500 text-emerald-700 dark:text-emerald-300'}`}>Ya, kirim ke penelaah<span className="block font-normal text-[11px] mt-0.5 opacity-90">Unggah draf dan pilih penelaah</span></button>
+                      <button type="button" onClick={() => setTpChoice('tidak')} className={`p-4 rounded-2xl border-2 text-left font-bold ${tpChoice === 'tidak' ? 'bg-slate-700 border-slate-700 text-white' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200'}`}>Tidak perlu<span className="block font-normal text-[11px] mt-0.5 opacity-90">Langsung ambil nomor</span></button>
+                    </div>
+                    {ya && (
+                      <div className="space-y-3 p-3 rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900">
+                        <div>
+                          <label className="block font-semibold mb-1">Draf surat (wajib)</label>
+                          <input type="file" multiple onChange={handleFileChangeSk} />
+                          <p className={`mt-1 text-[11px] ${skAttachments.length ? 'text-emerald-700' : 'text-amber-700'}`}>{skAttachments.length ? `${skAttachments.length} berkas terlampir` : 'Belum ada draf yang dilampirkan.'}</p>
+                        </div>
+                        <div>
+                          <label className="block font-semibold mb-1">Penelaah (wajib)</label>
+                          <select value={tpPenelaahId} onChange={(e) => setTpPenelaahId(e.target.value)} className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800">
+                            <option value="">Pilih penelaah...</option>
+                            {penelaahOptions.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+                          </select>
+                        </div>
+                        {namaPenelaah && <p className="text-[11px] text-slate-600 dark:text-slate-300">Setelah nomor terbit, silakan antarkan draf surat kepada <b>{namaPenelaah}</b>.</p>}
+                      </div>
+                    )}
+                  </div>
+                  <div className="p-5 pt-0 flex flex-wrap justify-end gap-2">
+                    <button type="button" onClick={() => setTelaahPrompt(null)} className="px-4 py-2 rounded-xl border border-slate-300 dark:border-slate-600 font-semibold text-xs">Batal</button>
+                    <button type="button" disabled={!siap} onClick={() => doAmbilNomorMandiri(ya ? { ...telaahPrompt.formData, attachments: skAttachments, kirimTelaah: true, penelaahId: tpPenelaahId } : { ...telaahPrompt.formData, kirimTelaah: false })} className="px-5 py-2 rounded-xl bg-emerald-600 text-white font-bold text-xs disabled:opacity-40">OK, Ambil Nomor</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
           {lastTakenTicket && (() => {
             const ticket = lastTakenTicket;
             const handlePrintSlip = () => {
@@ -8255,6 +8335,12 @@
 
                   {/* Big Number Ticket Body */}
                   <div className="p-6 space-y-4">
+                    {ticket.telaahPenelaahNama && (
+                      <div className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 text-xs text-amber-900 dark:text-amber-200">
+                        <p className="font-bold text-sm">Silakan antarkan draf surat kepada {ticket.telaahPenelaahNama}</p>
+                        <p className="mt-0.5 text-[11px] leading-relaxed">Surat berstatus Menunggu Telaah. Pengiriman ekspedisi dan pengesahan terbuka setelah penelaah menyetujui.</p>
+                      </div>
+                    )}
                     {ticket.status === 'dibatalkan' && (
                       <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/50 border border-rose-200 dark:border-rose-900/60 flex items-start gap-2.5 text-xs text-rose-800 dark:text-rose-300">
                         <Icon name="alert" className="w-5 h-5 shrink-0 text-rose-600 dark:text-rose-400 mt-0.5" />
