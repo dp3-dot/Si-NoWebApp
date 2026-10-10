@@ -3124,7 +3124,7 @@
         setIsAddUserOpen(false);
         callGAS('addUser', newUser, currentUser?.role)
           .then(() => showToast('User Ditambahkan', `Akun ${newUser.name} berhasil dibuat.`, 'success'))
-          .catch(() => showToast('User Ditambahkan', `Akun ${newUser.name} tersimpan.`, 'success'));
+          .catch((err) => { showToast('Gagal Menambah User', err.message || 'Server menolak perubahan.', 'alert'); loadDataFromSheets(); });
       };
 
       const handleUpdateUser = (id, updatedFields) => {
@@ -3133,7 +3133,7 @@
         setEditingUser(null);
         callGAS('updateUser', id, updatedFields, currentUser?.role)
           .then(() => showToast('Perubahan Disimpan', 'Data pengguna berhasil diperbarui.', 'success'))
-          .catch(() => showToast('Perubahan Disimpan', 'Data pengguna tersimpan.', 'success'));
+          .catch((err) => { showToast('Perubahan Ditolak', err.message || 'Server menolak perubahan.', 'alert'); loadDataFromSheets(); });
       };
 
       const handleDeleteUser = (id) => {
@@ -3786,7 +3786,7 @@
         window.addEventListener('online', flush); flush();
         const retryTimer = setInterval(() => { if (!document.hidden) flush(); }, 45000);
         return () => { window.removeEventListener('online', flush); clearInterval(retryTimer); };
-      }, [currentUser?.id]);
+      }, [currentUser?.id, currentUser?.role]);
       const dailyCourierSummary = () => {
         const today = jakartaDateKey();
         const stops = (ekspedisiList || []).flatMap((e) => {
@@ -3974,6 +3974,29 @@
             setIsLoggingIn(false);
             setLoginError('Terjadi kesalahan koneksi: ' + err.message);
           });
+      };
+
+      // Beralih antara peran utama dan peran tambahan tanpa login ulang (divalidasi server)
+      const hasDualRole = !!(currentUser && currentUser.roleTambahan && currentUser.rolePrimer);
+      const handleSwitchRole = () => {
+        if (!hasDualRole) return;
+        const target = currentUser.role === currentUser.rolePrimer ? currentUser.roleTambahan : currentUser.rolePrimer;
+        setIsLoading(true);
+        callGAS('switchRole', { role: target })
+          .then((res) => {
+            setIsLoading(false);
+            const su = res.data.user;
+            const u = { ...currentUser, ...su, role: normalizeRole(su.role, su), departmentId: normalizeDeptId(su.departmentId, su) };
+            sessionStorage.setItem('sinomer_gas_user', JSON.stringify(u));
+            setCurrentUser(u);
+            setActiveTab('dashboard');
+            setIsProfileOpen(false);
+            setIsMobileNavOpen(false);
+            loadDataFromSheets(u);
+            playSound('chime');
+            showToast('Peran Diganti', `Sekarang bekerja sebagai ${roleInfo(u.role, u).label}`, 'success');
+          })
+          .catch((err) => { setIsLoading(false); showToast('Gagal Beralih Peran', err.message || 'Terjadi kesalahan.', 'alert'); });
       };
 
       const handleLogout = () => setIsLogoutConfirmOpen(true);
@@ -4555,6 +4578,18 @@
                 >
                   <Icon name="ticket" className="w-4 h-4" />
                   <span>Ambil Nomor Surat</span>
+                </button>
+              )}
+
+              {hasDualRole && (
+                <button
+                  onClick={handleSwitchRole}
+                  title="Beralih peran tanpa login ulang"
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border-2 border-emerald-500 text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 text-[11px] font-bold hover:bg-emerald-100"
+                >
+                  <span aria-hidden="true">⇄</span>
+                  <span className="hidden sm:inline">Beralih ke {roleInfo(currentUser.role === currentUser.rolePrimer ? currentUser.roleTambahan : currentUser.rolePrimer, currentUser).short}</span>
+                  <span className="sm:hidden">Ganti</span>
                 </button>
               )}
 
@@ -7596,7 +7631,7 @@
                 <div className="px-6 py-4 bg-blue-600 text-white flex items-center justify-between"><div><h3 className="font-bold text-sm">{ekspEditing ? 'Ubah Ekspedisi' : 'Buat Ekspedisi Surat Keluar'}</h3><p className="text-[11px] text-blue-100">Satu surat dapat dikirim ke banyak OPD/penerima</p></div><button onClick={() => setIsEkspedisiOpen(false)}><Icon name="x" className="w-5 h-5" /></button></div>
                 <form key={ekspEditing?.id || 'baru'} onSubmit={(e) => { e.preventDefault(); const f=e.target; const sk=displaySuratKeluar.find(x => x.id === f.suratKeluarId.value); const inputRows=Array.from(f.querySelectorAll('[data-recipient-row]')).map((row,index)=>({rowNo:index+1,recipient:{namaInstansi:row.querySelector('[data-recipient-field=namaInstansi]').value.trim(),alamat:row.querySelector('[data-recipient-field=alamat]').value.trim(),nomorTelepon:row.querySelector('[data-recipient-field=nomorTelepon]').value.trim()}})).filter(x=>x.recipient.namaInstansi||x.recipient.alamat||x.recipient.nomorTelepon); if(!inputRows.length){showToast('Daftar tujuan kosong','Isi setidaknya satu tujuan.','alert');return;} const incomplete=inputRows.find(x=>!x.recipient.namaInstansi||!x.recipient.alamat); if(incomplete){showToast('Periksa daftar tujuan',`Baris ${incomplete.rowNo}: nama dan alamat wajib diisi. Nomor telepon opsional.`,'alert');return;} const recipients=inputRows.map(x=>x.recipient); const pet=users.find(u=>u.id===f.petugasId.value); if (ekspEditing) { handleEditEkspedisi({id:ekspEditing.id, petugasId:f.petugasId.value, petugasNama:pet?.name||'', tanggalPengiriman:f.tanggalPengiriman.value, catatan:f.catatan.value, recipients}); return; } handleCreateEkspedisi({suratKeluarId:f.suratKeluarId.value, nomorSurat:sk?.fullLetterNumber||'', perihal:sk?.subject||'', petugasId:f.petugasId.value, petugasNama:pet?.name||'', tanggalPengiriman:f.tanggalPengiriman.value, catatan:f.catatan.value, recipients}); }} className="p-6 space-y-4 max-h-[78vh] overflow-y-auto text-xs">
                   <div><label className="block font-semibold mb-1">Pilih Surat Keluar</label><select name="suratKeluarId" required defaultValue={ekspEditing?.suratKeluarId || ''} disabled={!!ekspEditing} className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"><option value="">-- Pilih surat --</option>{displaySuratKeluar.filter(sk=>ekspEditing || !['menunggu_telaah','perlu_perbaikan'].includes(sk.status)).map(sk=><option key={sk.id} value={sk.id}>{sk.fullLetterNumber} — {sk.subject}</option>)}</select></div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><div><label className="block font-semibold mb-1">Petugas Ekspedisi</label><select name="petugasId" required defaultValue={ekspEditing?.petugasId || ''} className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"><option value="">-- Pilih petugas --</option>{users.filter(u=>normalizeRole(u.role,u)==='petugas_ekspedisi' && u.isActive !== false).map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></div><div><label className="block font-semibold mb-1">Tanggal Pengiriman</label><input type="date" name="tanggalPengiriman" defaultValue={ekspEditing?.tanggalPengiriman || jakartaDateKey()} required className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" /></div></div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><div><label className="block font-semibold mb-1">Petugas Ekspedisi</label><select name="petugasId" required defaultValue={ekspEditing?.petugasId || ''} className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"><option value="">-- Pilih petugas --</option>{users.filter(u=>(normalizeRole(u.role,u)==='petugas_ekspedisi' || u.roleTambahan==='petugas_ekspedisi') && u.isActive !== false).map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></div><div><label className="block font-semibold mb-1">Tanggal Pengiriman</label><input type="date" name="tanggalPengiriman" defaultValue={ekspEditing?.tanggalPengiriman || jakartaDateKey()} required className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" /></div></div>
                   <div><label className="block font-semibold mb-1">Daftar Tujuan</label><EkspedisiRecipientEditor initialRecipients={ekspEditing?.recipients || []} /><p className="text-[10px] text-slate-500 mt-1">Nama dan alamat wajib diisi; nomor telepon opsional. Alamat membantu kurir menemukan tujuan.</p></div>
                   <div><label className="block font-semibold mb-1">Catatan</label><textarea name="catatan" rows="2" defaultValue={ekspEditing?.catatan || ''} className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"></textarea></div>
                   <div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-700"><button type="button" onClick={()=>setIsEkspedisiOpen(false)} className="px-4 py-2 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800">Batal</button><button type="submit" disabled={isLoading} className="px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold disabled:opacity-50 disabled:cursor-not-allowed">{isLoading ? 'Menyimpan...' : (ekspEditing ? 'Simpan Perubahan' : 'Simpan Ekspedisi')}</button></div>
@@ -9504,6 +9539,7 @@
                       password: f.password.value || 'password123',
                       pin: f.pin.value || '123456',
                       role: f.role.value,
+                      roleTambahan: f.role.value === 'operator_bidang' ? f.roleTambahan.value : '',
                       departmentId: deptObj.id,
                       departmentName: deptObj.name,
                       position: f.position.value,
@@ -9540,6 +9576,14 @@
                         <option value="pimpinan">Kepala Dinas (Pimpinan)</option>
                       </select>
                     </div>
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Role Tambahan (opsional)</label>
+                    <select name="roleTambahan" className="w-full p-2.5 rounded-xl border border-slate-300 font-semibold">
+                      <option value="">Tidak ada</option>
+                      <option value="petugas_ekspedisi">Petugas Ekspedisi / Kurir</option>
+                    </select>
+                    <p className="mt-1 text-[10px] text-slate-500">Hanya berlaku untuk Operator Bidang. Orangnya bisa beralih peran tanpa login ulang.</p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
@@ -9607,6 +9651,7 @@
                       nip: f.nip.value,
                       username: f.username.value.trim().toLowerCase(),
                       role: f.role.value,
+                      roleTambahan: f.role.value === 'operator_bidang' ? f.roleTambahan.value : '',
                       departmentId: deptObj.id,
                       departmentName: deptObj.name,
                       position: f.position.value,
@@ -9644,6 +9689,14 @@
                         <option value="pimpinan">Kepala Dinas (Pimpinan)</option>
                       </select>
                     </div>
+                  </div>
+                  <div>
+                    <label className="block font-semibold mb-1">Role Tambahan (opsional)</label>
+                    <select name="roleTambahan" defaultValue={editingUser.roleTambahan || ''} className="w-full p-2.5 rounded-xl border border-slate-300 font-semibold">
+                      <option value="">Tidak ada</option>
+                      <option value="petugas_ekspedisi">Petugas Ekspedisi / Kurir</option>
+                    </select>
+                    <p className="mt-1 text-[10px] text-slate-500">Hanya berlaku untuk Operator Bidang. Orangnya bisa beralih peran tanpa login ulang.</p>
                   </div>
 
                   <div className="grid grid-cols-2 gap-3">
