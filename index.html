@@ -630,6 +630,17 @@
       user: { label: 'Kepala Bidang', short: 'Kepala Bidang', icon: '👤', cls: 'bg-blue-100 text-blue-800' },
     };
     function roleInfo(role, user) { return ROLE_INFO[normalizeRole(role, user)] || ROLE_INFO.user; }
+    // Gabungkan data pengguna dari daftar server dengan data sesi saat ini.
+    // Peran AKTIF dan peran UTAMA berasal dari sesi (bukan dari sheet), agar tombol switch tidak hilang
+    // dan peran aktif tidak kembali ke peran utama setiap kali data dimuat ulang.
+    function mergeSessionUser(matched, base) {
+      const out = { ...matched };
+      const primer = (base && base.rolePrimer) || normalizeRole(matched.role, matched);
+      out.rolePrimer = primer;
+      out.roleTambahan = matched.roleTambahan || '';
+      out.role = (base && base.rolePrimer && base.role) ? base.role : primer;
+      return { ...out, role: normalizeRole(out.role, out), departmentId: normalizeDeptId(matched.departmentId, matched) };
+    }
     function canManageSuratMasuk(user) {
       const r = normalizeRole(user?.role, user);
       return r === 'admin' || r === 'operator_tu';
@@ -3436,11 +3447,7 @@
                     const parsed = JSON.parse(savedSession);
                     const matched = loadedUsers.find((u) => u.id === parsed.id || u.username === parsed.username);
                     if (matched) {
-                      const cleanMatched = {
-                        ...matched,
-                        role: normalizeRole(matched.role, matched),
-                        departmentId: normalizeDeptId(matched.departmentId, matched),
-                      };
+                      const cleanMatched = mergeSessionUser(matched, parsed);
                       setCurrentUser(cleanMatched);
                       sessionStorage.setItem('sinomer_gas_user', JSON.stringify(cleanMatched));
                       if (cleanMatched.role === 'user' || cleanMatched.role === 'operator_bidang') {
@@ -3454,11 +3461,7 @@
               } else if (effectiveUser) {
                 const matched = loadedUsers.find((u) => u.id === effectiveUser.id || u.username === effectiveUser.username);
                 if (matched) {
-                  const cleanMatched = {
-                    ...matched,
-                    role: normalizeRole(matched.role, matched),
-                    departmentId: normalizeDeptId(matched.departmentId, matched),
-                  };
+                  const cleanMatched = mergeSessionUser(matched, effectiveUser);
                   setCurrentUser(cleanMatched);
                   sessionStorage.setItem('sinomer_gas_user', JSON.stringify(cleanMatched));
                 }
