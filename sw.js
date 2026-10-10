@@ -1,5 +1,5 @@
 // Service worker E-Surat. Naikkan nomor versi di bawah setiap kali Anda mengunggah versi baru ke GitHub.
-const C = 'esurat-v14-courier';
+const C = 'esurat-v15-courier';
 const CDN = ['cdnjs.cloudflare.com', 'cdn.jsdelivr.net', 'cdn.tailwindcss.com', 'fonts.googleapis.com', 'fonts.gstatic.com'];
 
 self.addEventListener('install', e => {
