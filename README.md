@@ -1,5 +1,4 @@
-# Si-Nomer V2 (GitHub Pages)
-
+# Si-Nomer V2
 ## Isi
 
 - `index.html` — aplikasi frontend
