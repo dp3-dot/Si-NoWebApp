@@ -18,7 +18,7 @@
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
   </script>
   <!-- Tailwind CSS CDN -->
-  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.tailwindcss.com/3.4.17"></script>
   <script>
     tailwind.config = {
       darkMode: 'class',
@@ -47,11 +47,11 @@
   <script>
     // Failover fallback jika cdnjs terhalang proxy/firewall
     if (typeof React === 'undefined') {
-      document.write('<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"><\/script>');
-      document.write('<script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js"><\/script>');
+      document.write('<script src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"><\/script>');
+      document.write('<script src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"><\/script>');
     }
     if (typeof Babel === 'undefined') {
-      document.write('<script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"><\/script>');
+      document.write('<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.23.10/babel.min.js"><\/script>');
     }
     // Tangkap error loading script agar tidak layar putih
     window.onerror = function(msg, url, line, col, error) {
@@ -1115,6 +1115,8 @@
       : label === 'Draft' || label === 'Teragenda' ? 'bg-amber-100 text-amber-800'
       : 'bg-sky-100 text-sky-800'
     );
+    // Hanya tautan http(s); javascript:, data:, dll. dikosongkan
+    const safeHttpUrl = (u) => (/^https?:\/\/[^\s"'<>]+$/i.test(String(u || '').trim()) ? String(u).trim() : '');
     const escHtml = (v) => String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const fmtTgl = (iso) => { if (!iso) return '-'; const p = String(iso).slice(0, 10).split('-'); return p.length === 3 ? `${p[2]}-${p[1]}-${p[0]}` : iso; };
 
@@ -1534,7 +1536,7 @@
                     {t.hasilTelaah && <div className="font-semibold">{t.hasilTelaah}</div>}
                   </div>
                 </div>
-                {(t.statusTelaah === 'Selesai' || t.statusTelaah === 'Perlu Perbaikan') && <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300" style={{ whiteSpace: 'pre-line' }}>Catatan: {t.catatanTelaah}{t.lampiranTelaah ? <> • <a href={t.lampiranTelaah} target="_blank" rel="noreferrer" className="text-emerald-700 underline">Lampiran</a></> : null}</div>}
+                {(t.statusTelaah === 'Selesai' || t.statusTelaah === 'Perlu Perbaikan') && <div className="p-2 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300" style={{ whiteSpace: 'pre-line' }}>Catatan: {t.catatanTelaah}{safeHttpUrl(t.lampiranTelaah) ? <> • <a href={safeHttpUrl(t.lampiranTelaah) || undefined} target="_blank" rel="noreferrer noopener" className="text-emerald-700 underline">Lampiran</a></> : null}</div>}
                 <div className="flex flex-wrap gap-2">
                   {find(t) && <button onClick={() => onOpenLetter(t.jenisSurat === 'Surat Masuk' ? 'masuk' : 'keluar', find(t))} className="px-3 py-1.5 rounded-lg border border-slate-300 font-semibold">Buka Surat</button>}
                   {isPenelaah && !t.penelaahId && <button onClick={() => onTake(t.id)} className="px-3 py-1.5 rounded-lg bg-sky-600 text-white font-semibold">Ambil untuk Ditelaah</button>}
@@ -8428,7 +8430,7 @@
               printWindow.document.write(`
                 <html>
                   <head>
-                    <title>Bukti Pengambilan Nomor Surat - ${ticket.fullLetterNumber}</title>
+                    <title>Bukti Pengambilan Nomor Surat - ${escHtml(ticket.fullLetterNumber)}</title>
                     <style>
                       body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 24px; color: #1e293b; background: white; margin: 0; }
                       .ticket-card { border: 2px dashed #059669; border-radius: 12px; padding: 24px; max-width: 520px; margin: 0 auto; text-align: center; }
@@ -8445,11 +8447,11 @@
                   <body>
                     <div class="ticket-card">
                       <div class="header-instansi">PEMERINTAH KABUPATEN REJANG LEBONG</div>
-                      <div class="nama-instansi">${settings.agencyName || 'DINAS P3A-PPKB'}</div>
+                      <div class="nama-instansi">${escHtml(settings.agencyName || 'DINAS P3A-PPKB')}</div>
                       <div class="queue-badge">TIKET BUKTI PENGAMBILAN NOMOR MANDIRI</div>
                       
                       <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">NOMOR RESMI TERSIMPAN:</div>
-                      <div class="big-number">${ticket.fullLetterNumber}</div>
+                      <div class="big-number">${escHtml(ticket.fullLetterNumber)}</div>
 
                       <table class="info-table">
                         <tr>
@@ -8458,27 +8460,27 @@
                         </tr>
                         <tr>
                           <td class="label">Bidang Pemohon</td>
-                          <td>${ticket.departmentName}</td>
+                          <td>${escHtml(ticket.departmentName)}</td>
                         </tr>
                         <tr>
                           <td class="label">Nama Pemohon</td>
-                          <td>${ticket.requestedByUserName || currentUser?.name || '-'}</td>
+                          <td>${escHtml(ticket.requestedByUserName || currentUser?.name || '-')}</td>
                         </tr>
                         <tr>
                           <td class="label">Tujuan Surat</td>
-                          <td>${ticket.destination}</td>
+                          <td>${escHtml(ticket.destination)}</td>
                         </tr>
                         <tr>
                           <td class="label">Perihal</td>
-                          <td>${ticket.subject}</td>
+                          <td>${escHtml(ticket.subject)}</td>
                         </tr>
                         <tr>
                           <td class="label">Tanggal Surat</td>
-                          <td>${ticket.letterDate}</td>
+                          <td>${escHtml(ticket.letterDate)}</td>
                         </tr>
                         <tr>
                           <td class="label">Waktu Ambil</td>
-                          <td>${ticket.takenAt || new Date().toLocaleTimeString('id-ID')} WIB</td>
+                          <td>${escHtml(ticket.takenAt || new Date().toLocaleTimeString('id-ID'))} WIB</td>
                         </tr>
                       </table>
 
@@ -8740,7 +8742,7 @@
             const isPdf = (attachment.type || '').includes('pdf') || (attachment.name || '').toLowerCase().endsWith('.pdf');
             const isImage = (attachment.type || '').includes('image') || /\.(jpg|jpeg|png|webp|gif)$/i.test(attachment.name || '');
             const hasDataUrl = Boolean(attachment.dataUrl && attachment.dataUrl.indexOf('data:') === 0 && attachment.dataUrl.length > 20);
-            const externalUrl = attachment.driveUrl || (attachment.dataUrl && attachment.dataUrl.indexOf('data:') !== 0 ? attachment.dataUrl : '');
+            const externalUrl = safeHttpUrl(attachment.driveUrl || (attachment.dataUrl && attachment.dataUrl.indexOf('data:') !== 0 ? attachment.dataUrl : ''));
             const hasExternalUrl = Boolean(externalUrl);
             const hasRealData = hasDataUrl;
             const openExternalDocument = () => { if (hasExternalUrl) window.open(externalUrl, '_blank', 'noopener,noreferrer'); };
@@ -8767,9 +8769,9 @@
                 if (hasRealData && isPdf) {
                   printWindow.document.write(`
                     <html>
-                      <head><title>${attachment.name || 'Dokumen'}</title></head>
+                      <head><title>${escHtml(attachment.name || 'Dokumen')}</title></head>
                       <body style="margin:0; height:100vh;">
-                        <embed src="${attachment.dataUrl}" type="application/pdf" style="width:100%; height:100%;" />
+                        <embed src="${escHtml(attachment.dataUrl)}" type="application/pdf" style="width:100%; height:100%;" />
                         <script>window.onload = function() { setTimeout(function(){ window.print(); }, 500); };<\/script>
                       </body>
                     </html>
@@ -8777,9 +8779,9 @@
                 } else if (hasRealData && isImage) {
                   printWindow.document.write(`
                     <html>
-                      <head><title>${attachment.name || 'Dokumen'}</title></head>
+                      <head><title>${escHtml(attachment.name || 'Dokumen')}</title></head>
                       <body style="margin:0; display:flex; justify-content:center; align-items:center; min-height:100vh;">
-                        <img src="${attachment.dataUrl}" style="max-width:100%; height:auto;" />
+                        <img src="${escHtml(attachment.dataUrl)}" style="max-width:100%; height:auto;" />
                         <script>window.onload = function() { window.print(); };<\/script>
                       </body>
                     </html>
