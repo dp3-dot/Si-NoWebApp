@@ -365,10 +365,13 @@
     }
     function getOptionalCourierLocation(enabled) {
       if (!enabled || !navigator.geolocation) return Promise.resolve(null);
-      return new Promise((resolve) => navigator.geolocation.getCurrentPosition(
-        (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy || 0) }),
-        () => resolve(null), { enableHighAccuracy: true, timeout: 7000, maximumAge: 60000 }
-      ));
+      return new Promise((resolve) => {
+        const hardStop = setTimeout(() => resolve(null), 12000); // jaga-jaga bila dialog izin lokasi diabaikan
+        navigator.geolocation.getCurrentPosition(
+          (pos) => { clearTimeout(hardStop); resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude, accuracy: Math.round(pos.coords.accuracy || 0) }); },
+          () => { clearTimeout(hardStop); resolve(null); }, { enableHighAccuracy: true, timeout: 7000, maximumAge: 60000 }
+        );
+      });
     }
     function compressCourierPhoto(file, timestampLabel, location) {
       if (!file) return Promise.resolve('');
@@ -2798,6 +2801,9 @@
       const [ekspedisiExpanded, setEkspedisiExpanded] = useState(null);
       const [activeEkspedisiRecipient, setActiveEkspedisiRecipient] = useState(null);
       const [deliveryFormStatus, setDeliveryFormStatus] = useState('diterima');
+      const [deliverySaving, setDeliverySaving] = useState(null); // {pct,label} saat menyimpan bukti
+      const [deliveryFormError, setDeliveryFormError] = useState('');
+      const deliverySubmitLockRef = useRef(false);
       const [pendingDeliverySyncCount, setPendingDeliverySyncCount] = useState(0);
       const [printEkspedisiReceipt, setPrintEkspedisiReceipt] = useState(null);
       const signatureCanvasRef = useRef(null);
@@ -3836,7 +3842,7 @@
           .catch((err) => { setIsLoading(false); showToast('Telaah Gagal', err.message || 'Terjadi kesalahan.', 'alert'); });
       };
 
-      const openDeliveryForm = (recipient, initialStatus = 'diterima') => { setDeliveryFormStatus(initialStatus); setActiveEkspedisiRecipient(recipient); };
+      const openDeliveryForm = (recipient, initialStatus = 'diterima') => { setDeliveryFormError(''); setDeliverySaving(null); setDeliveryFormStatus(initialStatus); setActiveEkspedisiRecipient(recipient); };
       const patchCourierRecipient = (recipientId, patch) => setEkspedisiList((prev) => prev.map((e) => ({ ...e, recipients: (e.recipients || []).map((r) => r.id === recipientId ? { ...r, ...patch } : r) })));
       const enqueueCourierAction = async (api, data) => {
         const id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `q-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -3862,17 +3868,74 @@
           const res = await callGAS('updateEkspedisiPenerima', data);
           if (!res || res.success === false) throw new Error(res?.error || 'Data penerimaan gagal disimpan.');
           patchCourierRecipient(data.recipientId, { ...data, status: res.status, deliveredAt: res.deliveredAt, failureReason: res.failureReason || '', updatedAt: res.updatedAt || new Date().toISOString(), locationLat: res.locationLat || '', locationLng: res.locationLng || '', locationAccuracy: res.locationAccuracy || '' });
-          setActiveEkspedisiRecipient(null);
           showToast('Bukti tersimpan', 'Status penerima berhasil diperbarui.', 'success');
+          return { ok: true, offline: false };
         } catch (err) {
-          if (!isCourierNetworkFailure(err)) { showToast('Bukti gagal disimpan', err.message || 'Terjadi kesalahan.', 'alert'); return; }
+          if (!isCourierNetworkFailure(err)) { const message = err.message || 'Terjadi kesalahan.'; showToast('Bukti gagal disimpan', message, 'alert'); return { ok: false, message }; }
           try {
             await enqueueCourierAction('updateEkspedisiPenerima', data);
             patchCourierRecipient(data.recipientId, { ...data, updatedAt: new Date().toISOString() });
-            setActiveEkspedisiRecipient(null);
             showToast('Bukti disimpan di ponsel', 'Akan dikirim otomatis saat jaringan kembali. Jangan hapus data browser sebelum antrean selesai.', 'info');
-          } catch (queueErr) { showToast('Antrean offline gagal', queueErr.message || 'Periksa ruang penyimpanan ponsel.', 'alert'); }
+            return { ok: true, offline: true };
+          } catch (queueErr) { const message = queueErr.message || 'Periksa ruang penyimpanan ponsel.'; showToast('Antrean offline gagal', message, 'alert'); return { ok: false, message }; }
         } finally { setIsLoading(false); }
+      };
+      // Submit form bukti pengantaran: semua langkah dibungkus try/catch + indikator progres 0-100%.
+      const handleSubmitDelivery = async (f) => {
+        if (deliverySubmitLockRef.current) return; // cegah klik ganda
+        const recipient = activeEkspedisiRecipient;
+        if (!recipient) return;
+        const field = (name) => { const el = f.elements.namedItem(name); return el && el.value != null ? String(el.value) : ''; };
+        const warn = (title, msg) => { setDeliveryFormError(msg); showToast(title, msg, 'alert'); };
+        setDeliveryFormError('');
+        const status = field('status') || deliveryFormStatus || 'diterima';
+        const failed = status !== 'diterima';
+        const reason = field('failureReason'); // kolom ini tidak ada saat status "diterima" -> aman, hasilnya ''
+        if (!failed && !field('namaPenerima').trim()) return warn('Nama penerima wajib', 'Isi nama penerima untuk serah-terima berhasil.');
+        if (failed && !reason) return warn('Pilih alasan', 'Pilih alasan kegagalan terlebih dahulu.');
+        if (reason === 'Lainnya' && !field('catatan').trim()) return warn('Catatan wajib', 'Jelaskan alasan Lainnya pada catatan.');
+        deliverySubmitLockRef.current = true;
+        let ticker = null;
+        const step = (pct, label) => setDeliverySaving({ pct, label });
+        try {
+          step(8, 'Memeriksa data');
+          const shareEl = f.elements.namedItem('shareLocation');
+          const wantLoc = !!(shareEl && shareEl.checked);
+          if (wantLoc) step(15, 'Mengambil lokasi');
+          const loc = await getOptionalCourierLocation(wantLoc);
+          step(35, 'Memproses foto');
+          const stamp = new Date().toLocaleString('id-ID', { dateStyle: 'medium', timeStyle: 'short' });
+          const photoEl = f.elements.namedItem('photo');
+          const photo = await compressCourierPhoto(photoEl && photoEl.files ? photoEl.files[0] : null, stamp, loc);
+          const canvas = signatureCanvasRef.current;
+          const payload = {
+            recipientId: recipient.id,
+            namaPenerima: field('namaPenerima'),
+            jabatanPenerima: field('jabatanPenerima'),
+            status,
+            catatan: field('catatan'),
+            failureReason: failed ? reason : '',
+            signatureData: canvas && !canvas.dataset.empty ? canvas.toDataURL('image/png') : '',
+            photoData: photo,
+            location: loc
+          };
+          step(55, 'Mengirim ke server');
+          ticker = setInterval(() => setDeliverySaving((p) => (p && p.pct < 92 ? { ...p, pct: p.pct + 2 } : p)), 350);
+          const result = await handleUpdateEkspedisiRecipient(payload);
+          clearInterval(ticker); ticker = null;
+          if (!result.ok) { setDeliveryFormError(result.message || 'Bukti gagal disimpan. Coba lagi.'); return; }
+          step(100, result.offline ? 'Disimpan di ponsel' : 'Tersimpan');
+          await new Promise((r) => setTimeout(r, 800));
+          setActiveEkspedisiRecipient(null);
+        } catch (err) {
+          const msg = (err && err.message) ? err.message : 'Gagal memproses data.';
+          setDeliveryFormError(msg);
+          showToast('Bukti belum dapat diproses', msg, 'alert');
+        } finally {
+          if (ticker) clearInterval(ticker);
+          deliverySubmitLockRef.current = false;
+          setDeliverySaving(null);
+        }
       };
       const flushCourierOutbox = async () => {
         if (courierFlushBusyRef.current) return;
@@ -7797,8 +7860,8 @@
           {/* MODAL BUKTI PENERIMAAN */}
           {activeEkspedisiRecipient && (
             <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
-              <div className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200 dark:border-slate-700"><div className="px-6 py-4 bg-emerald-600 text-white flex items-center justify-between"><div><h3 className="font-bold text-sm">Hasil Pengantaran Surat</h3><p className="text-[11px] text-emerald-100">{activeEkspedisiRecipient.namaInstansi}</p></div><button onClick={()=>setActiveEkspedisiRecipient(null)}><Icon name="x" className="w-5 h-5" /></button></div>
-                <form onSubmit={async (e)=>{e.preventDefault(); const f=e.currentTarget; const status=f.status.value; const failed=status!=='diterima'; if(status==='diterima'&&!f.namaPenerima.value.trim()){showToast('Nama penerima wajib','Isi nama penerima untuk serah-terima berhasil.','alert');return;} if(failed&&!f.failureReason.value){showToast('Pilih alasan','Pilih alasan kegagalan terlebih dahulu.','alert');return;} if(f.failureReason.value==='Lainnya'&&!f.catatan.value.trim()){showToast('Catatan wajib','Jelaskan alasan Lainnya pada catatan.','alert');return;} const loc=await getOptionalCourierLocation(f.shareLocation.checked); const stamp=new Date().toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'short'}); try { const photo=await compressCourierPhoto(f.photo.files[0],stamp,loc); const canvas=signatureCanvasRef.current; handleUpdateEkspedisiRecipient({recipientId:activeEkspedisiRecipient.id,namaPenerima:f.namaPenerima.value,jabatanPenerima:f.jabatanPenerima.value,status,catatan:f.catatan.value,failureReason:failed?f.failureReason.value:'',signatureData:canvas&&!canvas.dataset.empty?canvas.toDataURL('image/png'):'',photoData:photo,location:loc}); } catch(err) { showToast('Bukti belum dapat diproses',err.message||'Gagal memproses foto.','alert'); } }} className="p-5 sm:p-6 space-y-4 text-sm max-h-[85vh] overflow-y-auto"><div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800"><p className="font-bold">{activeEkspedisiRecipient.namaInstansi}</p><p className="text-slate-500">{activeEkspedisiRecipient.alamat||'Alamat belum diisi'}</p></div><div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><div><label className="block font-semibold mb-1">Nama Penerima</label><input name="namaPenerima" required={deliveryFormStatus==='diterima'} className="w-full min-h-12 p-3 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-base" /></div><div><label className="block font-semibold mb-1">Jabatan</label><input name="jabatanPenerima" className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" /></div></div><div><label className="block font-semibold mb-1">Status</label><select name="status" value={deliveryFormStatus} onChange={(e)=>setDeliveryFormStatus(e.target.value)} className="w-full min-h-12 p-3 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-base"><option value="diterima">Berhasil diterima</option><option value="tidak_ditemui">Tidak ditemui</option><option value="ditolak">Ditolak</option><option value="dijadwalkan_ulang">Jadwalkan ulang</option></select></div>{deliveryFormStatus!=='diterima' && <div><label className="block font-semibold mb-1">Alasan gagal</label><select name="failureReason" defaultValue="" className="w-full min-h-12 p-3 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-base"><option value="">Pilih alasan</option><option>Penerima tidak ditemui</option><option>Penerima menolak</option><option>Alamat tidak ditemukan</option><option>Lokasi tutup</option><option>Diminta jadwalkan ulang</option><option>Lainnya</option></select></div>}<div><label className="block font-semibold mb-1">Tanda Tangan Penerima</label><canvas ref={signatureCanvasRef} width="520" height="150" data-empty="true" className="w-full h-32 border border-slate-300 dark:border-slate-600 rounded-xl bg-white touch-none" onPointerDown={(e)=>{const c=signatureCanvasRef.current; const ctx=c.getContext('2d'); const r=c.getBoundingClientRect(); const x=(e.clientX-r.left)*c.width/r.width; const y=(e.clientY-r.top)*c.height/r.height; ctx.beginPath(); ctx.moveTo(x,y); c.dataset.empty='false'; c.setPointerCapture(e.pointerId);}} onPointerMove={(e)=>{if(e.currentTarget.hasPointerCapture(e.pointerId)){const c=signatureCanvasRef.current; const ctx=c.getContext('2d'); const r=c.getBoundingClientRect(); const x=(e.clientX-r.left)*c.width/r.width; const y=(e.clientY-r.top)*c.height/r.height; ctx.lineWidth=3; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle='#111827'; ctx.lineTo(x,y); ctx.stroke();}}} /><button type="button" onClick={()=>{const c=signatureCanvasRef.current;c.getContext('2d').clearRect(0,0,c.width,c.height);c.dataset.empty='true';}} className="mt-2 px-4 py-2 rounded-lg border font-bold">Hapus tanda tangan</button></div><div><label className="block font-semibold mb-1">Foto bukti (opsional, otomatis dikompres)</label><input type="file" name="photo" accept="image/*" capture="environment" className="w-full min-h-12 p-3 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" /><p className="text-xs text-slate-500 mt-1">Foto diberi cap waktu. Ukuran dibatasi agar dapat disimpan di spreadsheet.</p></div><label className="flex items-start gap-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/30"><input type="checkbox" name="shareLocation" className="mt-1 w-5 h-5" /><span><strong>Sertakan lokasi saat ini (opsional)</strong><span className="block text-xs text-slate-600 dark:text-slate-300 mt-1">Browser akan meminta izin lokasi. Jika ditolak/tidak tersedia, bukti tetap dapat disimpan tanpa lokasi.</span></span></label><div><label className="block font-semibold mb-1">Catatan</label><textarea name="catatan" rows="2" className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"></textarea></div><div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-700"><button type="button" onClick={()=>setActiveEkspedisiRecipient(null)} className="px-4 py-2 rounded-xl">Batal</button><button type="submit" className="px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold">Simpan Bukti</button></div></form></div>
+              <div className="bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 rounded-2xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-200 dark:border-slate-700"><div className="px-6 py-4 bg-emerald-600 text-white flex items-center justify-between"><div><h3 className="font-bold text-sm">Hasil Pengantaran Surat</h3><p className="text-[11px] text-emerald-100">{activeEkspedisiRecipient.namaInstansi}</p></div><button type="button" disabled={!!deliverySaving} onClick={()=>setActiveEkspedisiRecipient(null)} className="disabled:opacity-40"><Icon name="x" className="w-5 h-5" /></button></div>
+                <form onSubmit={(e)=>{e.preventDefault(); handleSubmitDelivery(e.currentTarget);}} className="p-5 sm:p-6 space-y-4 text-sm max-h-[85vh] overflow-y-auto"><div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800"><p className="font-bold">{activeEkspedisiRecipient.namaInstansi}</p><p className="text-slate-500">{activeEkspedisiRecipient.alamat||'Alamat belum diisi'}</p></div><div className="grid grid-cols-1 sm:grid-cols-2 gap-3"><div><label className="block font-semibold mb-1">Nama Penerima</label><input name="namaPenerima" required={deliveryFormStatus==='diterima'} className="w-full min-h-12 p-3 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-base" /></div><div><label className="block font-semibold mb-1">Jabatan</label><input name="jabatanPenerima" className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" /></div></div><div><label className="block font-semibold mb-1">Status</label><select name="status" value={deliveryFormStatus} onChange={(e)=>setDeliveryFormStatus(e.target.value)} className="w-full min-h-12 p-3 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-base"><option value="diterima">Berhasil diterima</option><option value="tidak_ditemui">Tidak ditemui</option><option value="ditolak">Ditolak</option><option value="dijadwalkan_ulang">Jadwalkan ulang</option></select></div>{deliveryFormStatus!=='diterima' && <div><label className="block font-semibold mb-1">Alasan gagal</label><select name="failureReason" defaultValue="" className="w-full min-h-12 p-3 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-base"><option value="">Pilih alasan</option><option>Penerima tidak ditemui</option><option>Penerima menolak</option><option>Alamat tidak ditemukan</option><option>Lokasi tutup</option><option>Diminta jadwalkan ulang</option><option>Lainnya</option></select></div>}<div><label className="block font-semibold mb-1">Tanda Tangan Penerima</label><canvas ref={signatureCanvasRef} width="520" height="150" data-empty="true" className="w-full h-32 border border-slate-300 dark:border-slate-600 rounded-xl bg-white touch-none" onPointerDown={(e)=>{const c=signatureCanvasRef.current; const ctx=c.getContext('2d'); const r=c.getBoundingClientRect(); const x=(e.clientX-r.left)*c.width/r.width; const y=(e.clientY-r.top)*c.height/r.height; ctx.beginPath(); ctx.moveTo(x,y); c.dataset.empty='false'; c.setPointerCapture(e.pointerId);}} onPointerMove={(e)=>{if(e.currentTarget.hasPointerCapture(e.pointerId)){const c=signatureCanvasRef.current; const ctx=c.getContext('2d'); const r=c.getBoundingClientRect(); const x=(e.clientX-r.left)*c.width/r.width; const y=(e.clientY-r.top)*c.height/r.height; ctx.lineWidth=3; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.strokeStyle='#111827'; ctx.lineTo(x,y); ctx.stroke();}}} /><button type="button" onClick={()=>{const c=signatureCanvasRef.current;c.getContext('2d').clearRect(0,0,c.width,c.height);c.dataset.empty='true';}} className="mt-2 px-4 py-2 rounded-lg border font-bold">Hapus tanda tangan</button></div><div><label className="block font-semibold mb-1">Foto bukti (opsional, otomatis dikompres)</label><input type="file" name="photo" accept="image/*" capture="environment" className="w-full min-h-12 p-3 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800" /><p className="text-xs text-slate-500 mt-1">Foto diberi cap waktu. Ukuran dibatasi agar dapat disimpan di spreadsheet.</p></div><label className="flex items-start gap-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/30"><input type="checkbox" name="shareLocation" className="mt-1 w-5 h-5" /><span><strong>Sertakan lokasi saat ini (opsional)</strong><span className="block text-xs text-slate-600 dark:text-slate-300 mt-1">Browser akan meminta izin lokasi. Jika ditolak/tidak tersedia, bukti tetap dapat disimpan tanpa lokasi.</span></span></label><div><label className="block font-semibold mb-1">Catatan</label><textarea name="catatan" rows="2" className="w-full p-2.5 rounded-xl border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800"></textarea></div>{deliveryFormError && <div role="alert" className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 text-sm font-semibold border border-rose-200 dark:border-rose-800">⚠ {deliveryFormError}</div>}{deliverySaving && <div role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={deliverySaving.pct} className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"><div className="h-full bg-emerald-600 transition-all duration-300" style={{width: deliverySaving.pct + '%'}} /></div>}<div className="flex justify-end gap-2 pt-3 border-t border-slate-200 dark:border-slate-700"><button type="button" disabled={!!deliverySaving} onClick={()=>setActiveEkspedisiRecipient(null)} className="px-4 py-2 rounded-xl disabled:opacity-40">Batal</button><button type="submit" disabled={!!deliverySaving} className="relative overflow-hidden px-5 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold min-w-[12rem] disabled:cursor-wait">{deliverySaving && <span aria-hidden="true" className="absolute inset-y-0 left-0 transition-all duration-300" style={{width: deliverySaving.pct + '%', background: 'rgba(6,78,59,.55)'}} />}<span className="relative">{deliverySaving ? `${deliverySaving.label}… ${deliverySaving.pct}%` : 'Simpan Bukti'}</span></button></div></form></div>
             </div>
           )}
 
@@ -10327,7 +10390,7 @@
           )}
           {/* TOAST NOTIFIKASI */}
           {toast && (
-            <div className="fixed bottom-5 right-5 z-50 p-4 rounded-2xl bg-slate-900 text-white shadow-2xl border border-slate-700 flex items-center gap-3 animate-in slide-in-from-bottom-5">
+            <div className="fixed bottom-5 right-5 z-[110] p-4 rounded-2xl bg-slate-900 text-white shadow-2xl border border-slate-700 flex items-center gap-3 animate-in slide-in-from-bottom-5">
               <div className="w-7 h-7 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
                 <Icon name="check" className="w-4 h-4" />
               </div>
