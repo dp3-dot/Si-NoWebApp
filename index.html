@@ -3843,7 +3843,16 @@
       };
 
       const openDeliveryForm = (recipient, initialStatus = 'diterima') => { setDeliveryFormError(''); setDeliverySaving(null); setDeliveryFormStatus(initialStatus); setActiveEkspedisiRecipient(recipient); };
-      const patchCourierRecipient = (recipientId, patch) => setEkspedisiList((prev) => prev.map((e) => ({ ...e, recipients: (e.recipients || []).map((r) => r.id === recipientId ? { ...r, ...patch } : r) })));
+      const patchCourierRecipient = (recipientId, patch) => setEkspedisiList((prev) => prev.map((e) => {
+        if (!(e.recipients || []).some((r) => r.id === recipientId)) return e;
+        const recipients = e.recipients.map((r) => r.id === recipientId ? { ...r, ...patch } : r);
+        // Hitung ulang status induk surat (sama seperti aturan server) agar lencana "BERJALAN" langsung berubah menjadi "SELESAI".
+        const FINAL = ['diterima', 'tidak_ditemui', 'ditolak', 'dijadwalkan_ulang'];
+        const norm = (r) => (!r.status || r.status === 'belum_diantar') ? 'ditugaskan' : r.status;
+        const allFinal = recipients.length > 0 && recipients.every((r) => FINAL.includes(norm(r)));
+        const progressed = recipients.some((r) => norm(r) !== 'ditugaskan');
+        return { ...e, recipients, status: allFinal ? 'selesai' : (progressed ? 'berjalan' : 'ditugaskan') };
+      }));
       const enqueueCourierAction = async (api, data) => {
         const id = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `q-${Date.now()}-${Math.random().toString(36).slice(2)}`;
         await putCourierQueueItem({ id, api, data, userId: String(currentUser?.id || ''), createdAt: Date.now() });
@@ -3908,6 +3917,17 @@
           const photoEl = f.elements.namedItem('photo');
           const photo = await compressCourierPhoto(photoEl && photoEl.files ? photoEl.files[0] : null, stamp, loc);
           const canvas = signatureCanvasRef.current;
+          // dataset.empty berisi teks 'true'/'false', jadi harus dibandingkan sebagai teks (bukan dengan tanda seru).
+          let signatureData = '';
+          if (canvas && canvas.dataset.empty === 'false') {
+            signatureData = canvas.toDataURL('image/png');
+            if (signatureData.length > 47000) { // batas sel spreadsheet: kecilkan ukuran bila tanda tangan terlalu padat
+              const small = document.createElement('canvas');
+              small.width = Math.round(canvas.width / 2); small.height = Math.round(canvas.height / 2);
+              small.getContext('2d').drawImage(canvas, 0, 0, small.width, small.height);
+              signatureData = small.toDataURL('image/png');
+            }
+          }
           const payload = {
             recipientId: recipient.id,
             namaPenerima: field('namaPenerima'),
@@ -3915,7 +3935,7 @@
             status,
             catatan: field('catatan'),
             failureReason: failed ? reason : '',
-            signatureData: canvas && !canvas.dataset.empty ? canvas.toDataURL('image/png') : '',
+            signatureData: signatureData,
             photoData: photo,
             location: loc
           };
