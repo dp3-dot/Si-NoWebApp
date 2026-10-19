@@ -2804,6 +2804,7 @@
       const [deliverySaving, setDeliverySaving] = useState(null); // {pct,label} saat menyimpan bukti
       const [deliveryFormError, setDeliveryFormError] = useState('');
       const deliverySubmitLockRef = useRef(false);
+      const lastServerNextRef = useRef(0);
       const [pendingDeliverySyncCount, setPendingDeliverySyncCount] = useState(0);
       const [printEkspedisiReceipt, setPrintEkspedisiReceipt] = useState(null);
       const signatureCanvasRef = useRef(null);
@@ -3624,6 +3625,31 @@
         setIsDataReady(true);
       }, []);
 
+      // Saat dialog "Ambil Nomor" terbuka: ambil nomor berikutnya terbaru dari server (langsung, lalu tiap 15 detik).
+      // Nomor resmi tetap ditentukan server saat tombol simpan ditekan; angka di layar hanya pratinjau.
+      useEffect(() => {
+        if (!isAmbilNomorOpen || !currentUser) return undefined;
+        let stopped = false;
+        lastServerNextRef.current = nextSkQueueNumber; // nomor yang sedang dilihat pengguna saat dialog dibuka
+        const refreshNext = () => {
+          if (stopped || document.hidden) return;
+          callGAS('getLiveUpdates', new Date().toISOString())
+            .then((res) => {
+              const n = Number(res && res.nextQueueNumber);
+              if (stopped || !(n > 0)) return;
+              if (lastServerNextRef.current && n > lastServerNextRef.current) {
+                showToast('Nomor berikutnya berubah', 'Nomor #' + padNumber(n, 3) + ' kini yang tersedia (nomor sebelumnya baru diambil bidang lain).', 'info');
+              }
+              lastServerNextRef.current = n;
+              setServerNextQueueNumber(n);
+            })
+            .catch(() => {});
+        };
+        refreshNext();
+        const t = setInterval(refreshNext, 15000);
+        return () => { stopped = true; clearInterval(t); };
+      }, [isAmbilNomorOpen, currentUser]);
+
       // Polling ringan tanpa refresh manual: hanya mengambil kejadian baru setiap 20 detik.
       useEffect(() => {
         if (!currentUser || !isDataReady) return undefined;
@@ -3636,6 +3662,7 @@
           liveLastCheckRef.current = new Date().toISOString();
           callGAS('getLiveUpdates', since)
             .then((res) => {
+              if (!stopped && res && Number(res.nextQueueNumber) > 0) setServerNextQueueNumber(Number(res.nextQueueNumber));
               if (stopped || !res || !Array.isArray(res.events) || res.events.length === 0) return;
               setNotifications((prev) => {
                 const existing = new Set(prev.map((n) => n.id));
@@ -3709,6 +3736,7 @@
           letterKind: formData.letterKind || 'biasa',
         };
 
+        const previewQueueNo = nextSkQueueNumber;
         setIsLoading(true);
         callGAS('ambilNomorSuratMandiri', payload)
           .then((res) => {
@@ -3720,7 +3748,12 @@
               setIsAmbilNomorOpen(false);
               resetSkForm();
               playSound('success');
-              showToast('Nomor Surat Berhasil Diambil!', res.data.fullLetterNumber, 'success');
+              const gotQueueNo = Number(res.data.queueNumber) || 0;
+              if (gotQueueNo && gotQueueNo !== previewQueueNo) {
+                showToast('Nomor Surat Berhasil Diambil!', res.data.fullLetterNumber + ' (nomor urut #' + padNumber(gotQueueNo, 3) + ', bukan #' + padNumber(previewQueueNo, 3) + ' karena sudah diambil bidang lain)', 'success');
+              } else {
+                showToast('Nomor Surat Berhasil Diambil!', res.data.fullLetterNumber, 'success');
+              }
               if (res.data.telaahPenelaahNama) loadDataFromSheets();
             }
           })
